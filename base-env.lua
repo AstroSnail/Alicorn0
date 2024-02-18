@@ -574,6 +574,33 @@ local function forall_type_impl(syntax, env)
 	--local ok,
 end
 
+local function forall_underscore_type_impl(syntax, env)
+	print("in forall_underscore_type_impl")
+	local ok, val_and_env, syntax = syntax:match({
+		metalang.listtail(
+			metalang.accept_handler,
+			exprs.expression(utils.accept_with_env, exprs.ExpressionArgs.new(terms.expression_goal.infer, env))
+		),
+	}, metalang.failure_handler, env)
+	if not ok then
+		return ok, val_and_env
+	end
+	local val = val_and_env.val
+	local env = val_and_env.env
+
+	local ok, fn_type_term, env =
+		syntax:match({ forall_type_impl_reducer(metalang.accept_handler, env) }, metalang.failure_handler, env)
+	if not ok then
+		return ok, fn_type_term
+	end
+	print("finished matching forall_underscore_type_impl and got")
+	print(fn_type_term:pretty_print())
+	if not env.enter_block then
+		error "env isn't an environment at end in forall_underscore_type_impl"
+	end
+	return ok, fn_type_term, env
+end
+
 ---Constrains a type by using a checked expression goal and producing an annotated inferrable term
 ---(the prim-number 5) -> produces inferrable_term.annotated(lit(5), lit(prim-number))
 ---@param syntax any
@@ -841,6 +868,8 @@ local core_operations = {
 	type_ = exprs.primitive_operative(startype_impl, "startype_impl"),
 	["forall"] = exprs.primitive_operative(forall_type_impl, "forall_type_impl"),
 	lambda = exprs.primitive_operative(lambda_impl, "lambda_impl"),
+	["forall_"] = exprs.primitive_operative(forall_underscore_type_impl, "forall_type_impl"),
+	lambda_ = exprs.primitive_operative(lambda_underscore_impl, "lambda_impl"),
 	the = exprs.primitive_operative(the_operative_impl, "the"),
 	wrap = build_wrap(typed.prim_wrap, typed.prim_wrapped_type),
 	["unstrict-wrap"] = build_wrap(typed.prim_unstrict_wrap, typed.prim_unstrict_wrapped_type),
