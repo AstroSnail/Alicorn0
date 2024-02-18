@@ -295,9 +295,9 @@ local tupleof_ascribed_names_inner = metalang.reducer(function(syntax, env, term
 		return terms.inferrable_term.tuple_cons(inf_array(...))
 	end
 	local function cons(...)
-		return terms.inferrable_term.enum_cons(terms.value.tuple_defn_type, "cons", tup_cons(...))
+		return terms.inferrable_term.enum_cons(terms.value.tuple_defn_type(terms.value.star(0)), "cons", tup_cons(...))
 	end
-	local empty = terms.inferrable_term.enum_cons(terms.value.tuple_defn_type, "empty", tup_cons())
+	local empty = terms.inferrable_term.enum_cons(terms.value.tuple_defn_type(terms.value.star(0)), "empty", tup_cons())
 	local args = empty
 
 	local names = gen.declare_array(gen.builtin_string)()
