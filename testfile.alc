@@ -1,6 +1,8 @@
 let prim-arith-binop = (prim-func-type (a : prim-number) (b : prim-number) -> (c : prim-number))
 let prim-sub = (intrinsic "return function(a, b) return a - b end" : prim-arith-binop)
 
+let somefun = (dprint "prim-sub" prim-sub)
+
 #let prim-sub = (intrinsic "return function(a, b) return a - b end" : (prim-func-type (a : prim-number) (b : prim-number) -> (c : prim-number)))
 
 #let foo = (record (bar = 5) (baz = 6))
@@ -379,10 +381,17 @@ let sub_type = forall (x : prim-number) (y : prim-number) -> res : prim-number
 (the sub_type sub)
 
 let (orig-results) = get-prim-func-res-inner(wrap(type, foo), prim-nil)
-let orig-results = unwrap(func-conv-res-type(oldargs), orig-results)
+let orig-results = dprint("orig-results", unwrap(func-conv-res-type(oldargs), orig-results))
 let new-results =
-	lambda ((args : unwrap(type, newargs)))
-		let (newres valid) = orig-results(tuple-to-prim-tuple(oldargs, oldargs-valid, args))
+	lambda ((jargs : unwrap(type, newargs)))
+		let idkwhat = dprint("idkwhat", "foobar")
+		let realolder = dprint("realolder", oldargs)
+		let realoldervalid = dprint("realoldervalid", oldargs-valid)
+		let older = dprint("notolder", jargs)
+		let something2 = dprint("something2", tuple-to-prim-tuple(oldargs, oldargs-valid, jargs))
+		let something = (dprint "something" orig-results(something2))
+		#let (newres) = something
+		#something
 
 
 let syntax =

@@ -75,6 +75,10 @@ local function let_bind(syntax, env)
 		local tupletype = gen.declare_array(gen.builtin_string)
 		env = env:bind_local(terms.binding.tuple_elim(tupletype(unpack(name)), bind.val))
 	else
+		print("LET_BIND")
+		print("name:", name)
+		print("val: (inferrable term follows)")
+		print(bind.val)
 		env = env:bind_local(terms.binding.let(name, bind.val))
 	end
 
@@ -656,6 +660,53 @@ local function lambda_impl(syntax, env)
 	return true, term, resenv
 end
 
+-- this is a bodge
+local function dprint_impl(syntax, env, goal, userdata)
+	local ok, str, val_and_env = syntax:match({
+		metalang.listmatch(
+			metalang.accept_handler,
+			metalang.isvalue(metalang.accept_handler),
+			exprs.expression(utils.accept_with_env, exprs.ExpressionArgs.new(goal, env))
+		),
+	}, metalang.failure_handler, env)
+	if not ok then
+		return ok, val_and_env
+	end
+	local val, env = val_and_env.val, val_and_env.env
+
+	print("dprint: activated")
+	print("dprint: context string:", str.val)
+	print("dprint: inferring: (inferrable term follows)")
+	print(val:pretty_print())
+	local type_of_typed_term, usages, the_typed_term = evaluator.infer(val, env.typechecking_context)
+	print("dprint: result of inference: (typed term follows)")
+	print(the_typed_term:pretty_print())
+	print("dprint: whose type is: (value term follows)")
+	print(type_of_typed_term:pretty_print())
+	local typed_array = gen.declare_array(terms.typed_term)
+	local function wrap_prim_arg(term)
+		return terms.typed_term.prim_tuple_cons(typed_array(terms.typed_term.prim_wrap(term)))
+	end
+	local function unwrap_prim_result(term)
+		return terms.typed_term.prim_unwrap(terms.typed_term.tuple_element_access(term, 1))
+	end
+	local dprint = terms.typed_term.literal(terms.value.prim(function(x)
+		print("USING DPRINT")
+		print("context:", str.val)
+		print(x:pretty_print())
+		print("END USING DPRINT")
+		return x
+	end))
+
+	return ok,
+		terms.inferrable_term.typed(
+			type_of_typed_term,
+			usages,
+			unwrap_prim_result(terms.typed_term.application(dprint, wrap_prim_arg(the_typed_term)))
+		),
+		env
+end
+
 local value = terms.value
 local typed = terms.typed_term
 
@@ -853,6 +904,7 @@ local core_operations = {
 	--tuple = evaluator.primitive_operative(tuple_type_impl),
 	--["tuple-of"] = evaluator.primitive_operative(tuple_of_impl),
 	--number = { type = types.type, val = types.number }
+	dprint = exprs.primitive_operative(dprint_impl, "dprint_impl"),
 }
 
 -- FIXME: use these once reimplemented with terms

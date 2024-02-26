@@ -70,7 +70,13 @@ function environment:bind_local(binding)
 	p(binding)
 	if binding:is_let() then
 		local name, expr = binding:unwrap_let()
+		print("BINDING:IS_LET")
+		print("inferring term: (inferrable term follows)")
+		print(expr)
 		local expr_type, expr_usages, expr_term = infer(expr, self.typechecking_context)
+		print("BINDING:IS_LET")
+		print("inferred type: (value term follows)")
+		print(expr_type)
 		if terms.value.value_check(expr_type) ~= true then
 			print("expr", expr)
 			error("infer returned a bad type for expr in bind_local")
@@ -78,6 +84,9 @@ function environment:bind_local(binding)
 		local n = #self.typechecking_context
 		local term = inferrable_term.bound_variable(n + 1)
 		local locals = self.locals:put(name, term)
+		print("BINDING:IS_LET")
+		print("evaluating term: (typed term follows)")
+		print(expr_term)
 		local evaled = eval.evaluate(expr_term, self.typechecking_context.runtime_context)
 		-- print "doing let binding"
 		-- print(expr:pretty_print())

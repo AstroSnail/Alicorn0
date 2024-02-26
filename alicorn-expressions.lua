@@ -455,6 +455,8 @@ local function primitive_operative(fn, name)
 			error("env passed to primitive_operative " .. debugstring .. " isn't an env or is nil", env)
 		end
 		-- userdata isn't passed in as it's always empty for primitive operatives
+		print("PRIMITIVE_OPERATIVE")
+		print(debugstring)
 		local ok, res, env = fn(syn, env, goal)
 		if not ok then
 			error(OperativeError.new(res, syn.anchor, debugstring))

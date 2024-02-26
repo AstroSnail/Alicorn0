@@ -1317,11 +1317,11 @@ function infer(
 	elseif inferrable_term:is_prim_wrap() then
 		local content = inferrable_term:unwrap_prim_wrap()
 		local content_type, content_usages, content_term = infer(content, typechecking_context)
-		return value.prim_wrapped_type(backing_type), content_usages, typed_term.prim_wrap(content_term)
+		return value.prim_wrapped_type(content_type), content_usages, typed_term.prim_wrap(content_term)
 	elseif inferrable_term:is_prim_unstrict_wrap() then
 		local content = inferrable_term:unwrap_prim_wrap()
 		local content_type, content_usages, content_term = infer(content, typechecking_context)
-		return value.prim_unstrict_wrapped_type(backing_type),
+		return value.prim_unstrict_wrapped_type(content_type),
 			content_usages,
 			typed_term.prim_unstrict_wrap(content_term)
 	elseif inferrable_term:is_prim_unwrap() then
@@ -1554,7 +1554,7 @@ function evaluate(typed_term, runtime_context)
 		local tuple_term, index = typed_term:unwrap_tuple_element_access()
 		print("tuple_element_access tuple_term", tuple_term)
 		local tuple = evaluate(tuple_term, runtime_context)
-		print("tuple_element_access tuple_term", tuple)
+		print("tuple_element_access tuple", tuple)
 		return index_tuple_value(tuple, index)
 	elseif typed_term:is_tuple_type() then
 		local definition_term = typed_term:unwrap_tuple_type()
