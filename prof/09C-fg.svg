@@ -1,0 +1,1641 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="1206" onload="init(evt)" viewBox="0 0 1200 1206" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="1206.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >09C</text>
+<text id="details" x="10.00" y="1189" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="1189" > </text>
+<g id="frames">
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="405" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="415.5" >eva..</text>
+</g>
+<g >
+<title>[string]:15 (10 samples, 3.30%)</title><rect x="726.6" y="341" width="38.9" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="729.57" y="351.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (291 samples, 96.04%)</title><rect x="48.9" y="1077" width="1133.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="51.94" y="1087.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="469" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="479.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:check (11 samples, 3.63%)</title><rect x="469.5" y="533" width="42.9" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="472.54" y="543.5" >eval..</text>
+</g>
+<g >
+<title>terms-generators.lua:__eq (11 samples, 3.63%)</title><rect x="391.7" y="389" width="42.8" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="394.65" y="399.5" >term..</text>
+</g>
+<g >
+<title>[string]:15 (11 samples, 3.63%)</title><rect x="512.4" y="421" width="42.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="515.38" y="431.5" >[str..</text>
+</g>
+<g >
+<title>terms-generators.lua:__eq (9 samples, 2.97%)</title><rect x="391.7" y="309" width="35.0" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="394.65" y="319.5" >te..</text>
+</g>
+<g >
+<title>[string]:__eq (15 samples, 4.95%)</title><rect x="204.7" y="645" width="58.4" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="207.72" y="655.5" >[strin..</text>
+</g>
+<g >
+<title>[string]:39 (9 samples, 2.97%)</title><rect x="882.3" y="341" width="35.1" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="885.34" y="351.5" >[s..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (134 samples, 44.22%)</title><rect x="660.4" y="501" width="521.8" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="663.36" y="511.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:check (13 samples, 4.29%)</title><rect x="726.6" y="453" width="50.6" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="729.57" y="463.5" >evalu..</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="391.7" y="341" width="35.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="394.65" y="351.5" >[s..</text>
+</g>
+<g >
+<title>[string]:39 (11 samples, 3.63%)</title><rect x="469.5" y="501" width="42.9" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="472.54" y="511.5" >[str..</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="469.5" y="517" width="42.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="472.54" y="527.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (11 samples, 3.63%)</title><rect x="1139.4" y="245" width="42.8" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="1142.37" y="255.5" >eval..</text>
+</g>
+<g >
+<title>[string]:17 (11 samples, 3.63%)</title><rect x="469.5" y="405" width="42.9" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="472.54" y="415.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (54 samples, 17.82%)</title><rect x="971.9" y="357" width="210.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="974.91" y="367.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:14 (9 samples, 2.97%)</title><rect x="469.5" y="293" width="35.1" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="472.54" y="303.5" >[s..</text>
+</g>
+<g >
+<title>terms-generators.lua:__eq (11 samples, 3.63%)</title><rect x="512.4" y="341" width="42.8" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="515.38" y="351.5" >term..</text>
+</g>
+<g >
+<title>evaluator.lua:check (10 samples, 3.30%)</title><rect x="1018.6" y="309" width="39.0" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1021.65" y="319.5" >eva..</text>
+</g>
+<g >
+<title>[string]:14 (10 samples, 3.30%)</title><rect x="270.9" y="469" width="39.0" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="273.92" y="479.5" >[st..</text>
+</g>
+<g >
+<title>[string]:8 (10 samples, 3.30%)</title><rect x="687.6" y="389" width="39.0" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="690.62" y="399.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:check (9 samples, 2.97%)</title><rect x="882.3" y="389" width="35.1" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="885.34" y="399.5" >ev..</text>
+</g>
+<g >
+<title>[string]:17 (13 samples, 4.29%)</title><rect x="204.7" y="533" width="50.6" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="207.72" y="543.5" >[stri..</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="309.9" y="533" width="35.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="312.87" y="543.5" >[s..</text>
+</g>
+<g >
+<title>[string]:39 (10 samples, 3.30%)</title><rect x="1018.6" y="261" width="39.0" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="1021.65" y="271.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:check (10 samples, 3.30%)</title><rect x="270.9" y="645" width="39.0" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="273.92" y="655.5" >eva..</text>
+</g>
+<g >
+<title>[string]:39 (15 samples, 4.95%)</title><rect x="512.4" y="485" width="58.4" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="515.38" y="495.5" >[strin..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="687.6" y="405" width="39.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="690.62" y="415.5" >[st..</text>
+</g>
+<g >
+<title>[string]:17 (13 samples, 4.29%)</title><rect x="204.7" y="453" width="50.6" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="207.72" y="463.5" >[stri..</text>
+</g>
+<g >
+<title>[string]:39 (15 samples, 4.95%)</title><rect x="204.7" y="629" width="58.4" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="207.72" y="639.5" >[strin..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (172 samples, 56.77%)</title><rect x="512.4" y="549" width="669.8" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="515.38" y="559.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (84 samples, 27.72%)</title><rect x="855.1" y="421" width="327.1" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="858.08" y="431.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="1088.7" y="229" width="35.1" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="1091.75" y="239.5" >[s..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (291 samples, 96.04%)</title><rect x="48.9" y="1109" width="1133.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="51.94" y="1119.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>terms-generators.lua:__eq (13 samples, 4.29%)</title><rect x="204.7" y="485" width="50.6" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="207.72" y="495.5" >terms..</text>
+</g>
+<g >
+<title>[string]:__eq (13 samples, 4.29%)</title><rect x="204.7" y="517" width="50.6" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="207.72" y="527.5" >[stri..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (277 samples, 91.42%)</title><rect x="103.5" y="821" width="1078.7" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="106.47" y="831.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="917" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="927.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (12 samples, 3.96%)</title><rect x="601.9" y="341" width="46.8" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="604.95" y="351.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:check (9 samples, 2.97%)</title><rect x="1088.7" y="261" width="35.1" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1091.75" y="271.5" >ev..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="687.6" y="437" width="39.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="690.62" y="447.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (251 samples, 82.84%)</title><rect x="204.7" y="693" width="977.5" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="207.72" y="703.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:14 (13 samples, 4.29%)</title><rect x="204.7" y="421" width="50.6" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="207.72" y="431.5" >[stri..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="693" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="703.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="1088.7" y="197" width="35.1" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="1091.75" y="207.5" >[s..</text>
+</g>
+<g >
+<title>terms-generators.lua:__eq (10 samples, 3.30%)</title><rect x="601.9" y="229" width="39.0" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="604.95" y="239.5" >ter..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (282 samples, 93.07%)</title><rect x="84.0" y="869" width="1098.2" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="86.99" y="879.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:__eq (13 samples, 4.29%)</title><rect x="204.7" y="469" width="50.6" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="207.72" y="479.5" >[stri..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="725" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="735.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="1093" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="1103.5" >eva..</text>
+</g>
+<g >
+<title>[string]:15 (12 samples, 3.96%)</title><rect x="601.9" y="389" width="46.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="604.95" y="399.5" >[str..</text>
+</g>
+<g >
+<title>[string]:8 (10 samples, 3.30%)</title><rect x="1018.6" y="229" width="39.0" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="1021.65" y="239.5" >[st..</text>
+</g>
+<g >
+<title>[string]:17 (11 samples, 3.63%)</title><rect x="512.4" y="389" width="42.8" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="515.38" y="399.5" >[str..</text>
+</g>
+<g >
+<title>all (303 samples, 100%)</title><rect x="10.0" y="1157" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="1167.5" ></text>
+</g>
+<g >
+<title>terms-generators.lua:__eq (13 samples, 4.29%)</title><rect x="204.7" y="405" width="50.6" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="207.72" y="415.5" >terms..</text>
+</g>
+<g >
+<title>evaluator.lua:check (10 samples, 3.30%)</title><rect x="270.9" y="629" width="39.0" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="273.92" y="639.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:check (15 samples, 4.95%)</title><rect x="601.9" y="485" width="58.5" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="604.95" y="495.5" >evalua..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="533" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="543.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="565" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="575.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="601.9" y="261" width="39.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="604.95" y="271.5" >[st..</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="882.3" y="293" width="35.1" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="885.34" y="303.5" >[s..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="837" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="847.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="469.5" y="421" width="42.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="472.54" y="431.5" >[str..</text>
+</g>
+<g >
+<title>[string]:8 (12 samples, 3.96%)</title><rect x="391.7" y="501" width="46.7" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="394.65" y="511.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (92 samples, 30.36%)</title><rect x="823.9" y="437" width="358.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="826.93" y="447.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:39 (10 samples, 3.30%)</title><rect x="687.6" y="421" width="39.0" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="690.62" y="431.5" >[st..</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="391.7" y="373" width="42.8" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="394.65" y="383.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (289 samples, 95.38%)</title><rect x="56.7" y="981" width="1125.5" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="59.73" y="991.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (291 samples, 96.04%)</title><rect x="48.9" y="1061" width="1133.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="51.94" y="1071.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="501" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="511.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="882.3" y="357" width="35.1" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="885.34" y="367.5" >[s..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (287 samples, 94.72%)</title><rect x="64.5" y="933" width="1117.7" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="67.52" y="943.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:8 (15 samples, 4.95%)</title><rect x="512.4" y="453" width="58.4" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="515.38" y="463.5" >[strin..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="270.9" y="613" width="39.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="273.92" y="623.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (291 samples, 96.04%)</title><rect x="48.9" y="1141" width="1133.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="51.94" y="1151.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="726.6" y="293" width="38.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="729.57" y="303.5" >[st..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="270.9" y="485" width="39.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="273.92" y="495.5" >[st..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="270.9" y="549" width="39.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="273.92" y="559.5" >[st..</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="212.5" y="213" width="35.1" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="215.51" y="223.5" >[s..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="805" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="815.5" >eva..</text>
+</g>
+<g >
+<title>[string]:8 (9 samples, 2.97%)</title><rect x="309.9" y="549" width="35.0" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="312.87" y="559.5" >[s..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="10.0" y="69" width="38.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="13.00" y="79.5" >[st..</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="391.7" y="293" width="35.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="394.65" y="303.5" >[s..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="309" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="319.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (13 samples, 4.29%)</title><rect x="204.7" y="437" width="50.6" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="207.72" y="447.5" >[stri..</text>
+</g>
+<g >
+<title>[string]:8 (15 samples, 4.95%)</title><rect x="204.7" y="597" width="58.4" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="207.72" y="607.5" >[strin..</text>
+</g>
+<g >
+<title>[string]:8 (10 samples, 3.30%)</title><rect x="270.9" y="565" width="39.0" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="273.92" y="575.5" >[st..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="1018.6" y="245" width="39.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="1021.65" y="255.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="245" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="255.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="661" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="671.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (291 samples, 96.04%)</title><rect x="48.9" y="1013" width="1133.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="51.94" y="1023.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:__eq (13 samples, 4.29%)</title><rect x="204.7" y="389" width="50.6" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="207.72" y="399.5" >[stri..</text>
+</g>
+<g >
+<title>[string]:39 (12 samples, 3.96%)</title><rect x="391.7" y="533" width="46.7" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="394.65" y="543.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="821" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="831.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="270.9" y="581" width="39.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="273.92" y="591.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (117 samples, 38.61%)</title><rect x="726.6" y="469" width="455.6" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="729.57" y="479.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="469.5" y="341" width="42.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="472.54" y="351.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (191 samples, 63.04%)</title><rect x="438.4" y="581" width="743.8" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="441.38" y="591.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:check (9 samples, 2.97%)</title><rect x="882.3" y="373" width="35.1" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="885.34" y="383.5" >ev..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="197" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="207.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="453" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="463.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="1018.6" y="277" width="39.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="1021.65" y="287.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="773" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="783.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="789" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="799.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (127 samples, 41.91%)</title><rect x="687.6" y="485" width="494.6" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="690.62" y="495.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:17 (11 samples, 3.63%)</title><rect x="204.7" y="373" width="42.9" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="207.72" y="383.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (266 samples, 87.79%)</title><rect x="146.3" y="741" width="1035.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="149.30" y="751.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="485" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="495.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="469.5" y="453" width="42.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="472.54" y="463.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (234 samples, 77.23%)</title><rect x="270.9" y="661" width="911.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="273.92" y="671.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:check (9 samples, 2.97%)</title><rect x="1088.7" y="245" width="35.1" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1091.75" y="255.5" >ev..</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="469.5" y="389" width="42.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="472.54" y="399.5" >[str..</text>
+</g>
+<g >
+<title>[string]:14 (13 samples, 4.29%)</title><rect x="204.7" y="501" width="50.6" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="207.72" y="511.5" >[stri..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (68 samples, 22.44%)</title><rect x="917.4" y="389" width="264.8" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="920.39" y="399.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (157 samples, 51.82%)</title><rect x="570.8" y="533" width="611.4" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="573.79" y="543.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="726.6" y="245" width="38.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="729.57" y="255.5" >[st..</text>
+</g>
+<g >
+<title>[string]:14 (10 samples, 3.30%)</title><rect x="601.9" y="245" width="39.0" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="604.95" y="255.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="869" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="879.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (24 samples, 7.92%)</title><rect x="1088.7" y="277" width="93.5" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="1091.75" y="287.5" >evaluator.l..</text>
+</g>
+<g >
+<title>evaluator.lua:check (15 samples, 4.95%)</title><rect x="512.4" y="533" width="58.4" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="515.38" y="543.5" >evalua..</text>
+</g>
+<g >
+<title>terms-generators.lua:__eq (11 samples, 3.63%)</title><rect x="469.5" y="357" width="42.9" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="472.54" y="367.5" >term..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="741" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="751.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="10.0" y="101" width="38.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="13.00" y="111.5" >[st..</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="512.4" y="405" width="42.8" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="515.38" y="415.5" >[str..</text>
+</g>
+<g >
+<title>[string]:__eq (12 samples, 3.96%)</title><rect x="777.2" y="373" width="46.7" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="780.19" y="383.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:check (12 samples, 3.96%)</title><rect x="777.2" y="421" width="46.7" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="780.19" y="431.5" >eval..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (27 samples, 8.91%)</title><rect x="1077.1" y="293" width="105.1" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="1080.06" y="303.5" >evaluator.lu..</text>
+</g>
+<g >
+<title>[string]:14 (11 samples, 3.63%)</title><rect x="391.7" y="405" width="42.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="394.65" y="415.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="325" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="335.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="341" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="351.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (12 samples, 3.96%)</title><rect x="601.9" y="293" width="46.8" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="604.95" y="303.5" >[str..</text>
+</g>
+<g >
+<title>[string]:__eq (12 samples, 3.96%)</title><rect x="391.7" y="517" width="46.7" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="394.65" y="527.5" >[str..</text>
+</g>
+<g >
+<title>[string]:39 (9 samples, 2.97%)</title><rect x="1088.7" y="213" width="35.1" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="1091.75" y="223.5" >[s..</text>
+</g>
+<g >
+<title>[string]:__eq (13 samples, 4.29%)</title><rect x="726.6" y="421" width="50.6" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="729.57" y="431.5" >[stri..</text>
+</g>
+<g >
+<title>[string]:8 (10 samples, 3.30%)</title><rect x="10.0" y="53" width="38.9" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="13.00" y="63.5" >[st..</text>
+</g>
+<g >
+<title>[string]:__eq (13 samples, 4.29%)</title><rect x="726.6" y="357" width="50.6" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="729.57" y="367.5" >[stri..</text>
+</g>
+<g >
+<title>[string]:__eq (12 samples, 3.96%)</title><rect x="391.7" y="485" width="46.7" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="394.65" y="495.5" >[str..</text>
+</g>
+<g >
+<title>[string]:__eq (12 samples, 3.96%)</title><rect x="391.7" y="549" width="46.7" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="394.65" y="559.5" >[str..</text>
+</g>
+<g >
+<title>[string]:require (10 samples, 3.30%)</title><rect x="10.0" y="1125" width="38.9" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="13.00" y="1135.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="373" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="383.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (236 samples, 77.89%)</title><rect x="263.1" y="677" width="919.1" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="266.14" y="687.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:14 (9 samples, 2.97%)</title><rect x="391.7" y="325" width="35.0" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="394.65" y="335.5" >[s..</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="469.5" y="261" width="35.1" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="472.54" y="271.5" >[s..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (291 samples, 96.04%)</title><rect x="48.9" y="1093" width="1133.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="51.94" y="1103.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="933" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="943.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="885" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="895.5" >eva..</text>
+</g>
+<g >
+<title>terms-generators.lua:__eq (10 samples, 3.30%)</title><rect x="270.9" y="453" width="39.0" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="273.92" y="463.5" >ter..</text>
+</g>
+<g >
+<title>evaluator.lua:check (10 samples, 3.30%)</title><rect x="10.0" y="117" width="38.9" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="13.00" y="127.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="549" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="559.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (15 samples, 4.95%)</title><rect x="1123.8" y="261" width="58.4" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="1126.80" y="271.5" >evalua..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="229" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="239.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (15 samples, 4.95%)</title><rect x="204.7" y="613" width="58.4" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="207.72" y="623.5" >[strin..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="389" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="399.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (42 samples, 13.86%)</title><rect x="1018.6" y="325" width="163.6" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="1021.65" y="335.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="512.4" y="325" width="42.8" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="515.38" y="335.5" >[str..</text>
+</g>
+<g >
+<title>terms.lua:__eq (11 samples, 3.63%)</title><rect x="204.7" y="277" width="42.9" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="207.72" y="287.5" >term..</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="391.7" y="453" width="42.8" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="394.65" y="463.5" >[str..</text>
+</g>
+<g >
+<title>[string]:__eq (12 samples, 3.96%)</title><rect x="777.2" y="405" width="46.7" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="780.19" y="415.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (183 samples, 60.40%)</title><rect x="469.5" y="565" width="712.7" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="472.54" y="575.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="1077" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="1087.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="10.0" y="37" width="38.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="13.00" y="47.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (291 samples, 96.04%)</title><rect x="48.9" y="1045" width="1133.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="51.94" y="1055.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="512.4" y="373" width="42.8" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="515.38" y="383.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="181" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="191.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (15 samples, 4.95%)</title><rect x="601.9" y="437" width="58.5" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="604.95" y="447.5" >[strin..</text>
+</g>
+<g >
+<title>[string]:14 (11 samples, 3.63%)</title><rect x="469.5" y="373" width="42.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="472.54" y="383.5" >[str..</text>
+</g>
+<g >
+<title>[string]:15 (11 samples, 3.63%)</title><rect x="391.7" y="469" width="42.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="394.65" y="479.5" >[str..</text>
+</g>
+<g >
+<title>[string]:8 (15 samples, 4.95%)</title><rect x="601.9" y="421" width="58.5" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="604.95" y="431.5" >[strin..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (46 samples, 15.18%)</title><rect x="1003.1" y="341" width="179.1" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="1006.07" y="351.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:__eq (12 samples, 3.96%)</title><rect x="777.2" y="341" width="46.7" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="780.19" y="351.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="981" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="991.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="149" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="159.5" >eva..</text>
+</g>
+<g >
+<title>[string]:17 (10 samples, 3.30%)</title><rect x="601.9" y="277" width="39.0" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="604.95" y="287.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="517" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="527.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (15 samples, 4.95%)</title><rect x="204.7" y="581" width="58.4" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="207.72" y="591.5" >[strin..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (259 samples, 85.48%)</title><rect x="173.6" y="725" width="1008.6" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="176.56" y="735.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>terms.lua:__eq (9 samples, 2.97%)</title><rect x="212.5" y="229" width="35.1" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="215.51" y="239.5" >te..</text>
+</g>
+<g >
+<title>[string]:__eq (15 samples, 4.95%)</title><rect x="601.9" y="405" width="58.5" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="604.95" y="415.5" >[strin..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="629" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="639.5" >eva..</text>
+</g>
+<g >
+<title>[string]:15 (10 samples, 3.30%)</title><rect x="270.9" y="533" width="39.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="273.92" y="543.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (273 samples, 90.10%)</title><rect x="119.0" y="789" width="1063.2" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="122.04" y="799.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:check (12 samples, 3.96%)</title><rect x="777.2" y="437" width="46.7" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="780.19" y="447.5" >eval..</text>
+</g>
+<g >
+<title>[string]:15 (13 samples, 4.29%)</title><rect x="204.7" y="565" width="50.6" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="207.72" y="575.5" >[stri..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="261" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="271.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="613" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="623.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="204.7" y="261" width="42.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="207.72" y="271.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (255 samples, 84.16%)</title><rect x="189.1" y="709" width="993.1" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="192.14" y="719.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:17 (11 samples, 3.63%)</title><rect x="391.7" y="437" width="42.8" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="394.65" y="447.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (203 samples, 67.00%)</title><rect x="391.7" y="597" width="790.5" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="394.65" y="607.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (278 samples, 91.75%)</title><rect x="99.6" y="837" width="1082.6" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="102.57" y="847.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="581" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="591.5" >eva..</text>
+</g>
+<g >
+<title>[string]:39 (15 samples, 4.95%)</title><rect x="601.9" y="453" width="58.5" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="604.95" y="463.5" >[strin..</text>
+</g>
+<g >
+<title>[string]:__eq (13 samples, 4.29%)</title><rect x="726.6" y="389" width="50.6" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="729.57" y="399.5" >[stri..</text>
+</g>
+<g >
+<title>[string]:14 (12 samples, 3.96%)</title><rect x="601.9" y="325" width="46.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="604.95" y="335.5" >[str..</text>
+</g>
+<g >
+<title>[string]:__eq (15 samples, 4.95%)</title><rect x="512.4" y="437" width="58.4" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="515.38" y="447.5" >[strin..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="293" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="303.5" >eva..</text>
+</g>
+<g >
+<title>[string]:9 (11 samples, 3.63%)</title><rect x="204.7" y="293" width="42.9" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="207.72" y="303.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (291 samples, 96.04%)</title><rect x="48.9" y="1125" width="1133.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="51.94" y="1135.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:check (12 samples, 3.96%)</title><rect x="391.7" y="581" width="46.7" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="394.65" y="591.5" >eval..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="270.9" y="517" width="39.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="273.92" y="527.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (289 samples, 95.38%)</title><rect x="56.7" y="965" width="1125.5" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="59.73" y="975.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (290 samples, 95.71%)</title><rect x="52.8" y="997" width="1129.4" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="55.84" y="1007.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:check (10 samples, 3.30%)</title><rect x="687.6" y="469" width="39.0" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="690.62" y="479.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="1013" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="1023.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="1018.6" y="213" width="39.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="1021.65" y="223.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:check (15 samples, 4.95%)</title><rect x="512.4" y="517" width="58.4" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="515.38" y="527.5" >evalua..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="1045" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="1055.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="213" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="223.5" >eva..</text>
+</g>
+<g >
+<title>terms.lua:__eq (9 samples, 2.97%)</title><rect x="605.8" y="181" width="35.1" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="608.84" y="191.5" >te..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="645" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="655.5" >eva..</text>
+</g>
+<g >
+<title>[string]:39 (10 samples, 3.30%)</title><rect x="10.0" y="85" width="38.9" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="13.00" y="95.5" >[st..</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="391.7" y="421" width="42.8" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="394.65" y="431.5" >[str..</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="882.3" y="325" width="35.1" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="885.34" y="335.5" >[s..</text>
+</g>
+<g >
+<title>[string]:14 (11 samples, 3.63%)</title><rect x="204.7" y="341" width="42.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="207.72" y="351.5" >[str..</text>
+</g>
+<g >
+<title>terms-generators.lua:__eq (11 samples, 3.63%)</title><rect x="204.7" y="325" width="42.9" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="207.72" y="335.5" >term..</text>
+</g>
+<g >
+<title>[string]:8 (9 samples, 2.97%)</title><rect x="1088.7" y="181" width="35.1" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="1091.75" y="191.5" >[s..</text>
+</g>
+<g >
+<title>evaluator.lua:check (12 samples, 3.96%)</title><rect x="391.7" y="565" width="46.7" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="394.65" y="575.5" >eval..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="853" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="863.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (32 samples, 10.56%)</title><rect x="1057.6" y="309" width="124.6" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="1060.59" y="319.5" >evaluator.lua:i..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (286 samples, 94.39%)</title><rect x="68.4" y="917" width="1113.8" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="71.42" y="927.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="601.9" y="213" width="39.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="604.95" y="223.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (285 samples, 94.06%)</title><rect x="72.3" y="885" width="1109.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="75.31" y="895.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:17 (10 samples, 3.30%)</title><rect x="726.6" y="309" width="38.9" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="729.57" y="319.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:check (15 samples, 4.95%)</title><rect x="204.7" y="677" width="58.4" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="207.72" y="687.5" >evalua..</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="469.5" y="309" width="35.1" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="472.54" y="319.5" >[s..</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="309.9" y="597" width="35.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="312.87" y="607.5" >[s..</text>
+</g>
+<g >
+<title>runtest.lua:fn (10 samples, 3.30%)</title><rect x="10.0" y="1109" width="38.9" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="13.00" y="1119.5" >run..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="965" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="975.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="726.6" y="325" width="38.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="729.57" y="335.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="277" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="287.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="270.9" y="437" width="39.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="273.92" y="447.5" >[st..</text>
+</g>
+<g >
+<title>[string]:14 (10 samples, 3.30%)</title><rect x="726.6" y="277" width="38.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="729.57" y="287.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:check (15 samples, 4.95%)</title><rect x="601.9" y="501" width="58.5" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="604.95" y="511.5" >evalua..</text>
+</g>
+<g >
+<title>[string]:17 (12 samples, 3.96%)</title><rect x="601.9" y="357" width="46.8" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="604.95" y="367.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (77 samples, 25.41%)</title><rect x="882.3" y="405" width="299.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="885.34" y="415.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:check (9 samples, 2.97%)</title><rect x="309.9" y="629" width="35.0" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="312.87" y="639.5" >ev..</text>
+</g>
+<g >
+<title>[string]:39 (9 samples, 2.97%)</title><rect x="309.9" y="581" width="35.0" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="312.87" y="591.5" >[s..</text>
+</g>
+<g >
+<title>[string]:8 (12 samples, 3.96%)</title><rect x="777.2" y="357" width="46.7" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="780.19" y="367.5" >[str..</text>
+</g>
+<g >
+<title>[string]:8 (9 samples, 2.97%)</title><rect x="882.3" y="309" width="35.1" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="885.34" y="319.5" >[s..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="901" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="911.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (60 samples, 19.80%)</title><rect x="948.5" y="373" width="233.7" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="951.55" y="383.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (268 samples, 88.45%)</title><rect x="138.5" y="757" width="1043.7" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="141.51" y="767.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="1029" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="1039.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="437" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="709" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="719.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="1088.7" y="165" width="35.1" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="1091.75" y="175.5" >[s..</text>
+</g>
+<g >
+<title>[string]:__eq (15 samples, 4.95%)</title><rect x="512.4" y="469" width="58.4" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="515.38" y="479.5" >[strin..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (271 samples, 89.44%)</title><rect x="126.8" y="773" width="1055.4" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="129.83" y="783.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (291 samples, 96.04%)</title><rect x="48.9" y="1029" width="1133.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="51.94" y="1039.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (149 samples, 49.17%)</title><rect x="601.9" y="517" width="580.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="604.95" y="527.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="605.8" y="165" width="35.1" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="608.84" y="175.5" >[s..</text>
+</g>
+<g >
+<title>[string]:__eq (13 samples, 4.29%)</title><rect x="204.7" y="549" width="50.6" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="207.72" y="559.5" >[stri..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="997" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="1007.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="1061" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="1071.5" >eva..</text>
+</g>
+<g >
+<title>terms-generators.lua:__eq (10 samples, 3.30%)</title><rect x="726.6" y="261" width="38.9" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="729.57" y="271.5" >ter..</text>
+</g>
+<g >
+<title>evaluator.lua:check (13 samples, 4.29%)</title><rect x="726.6" y="437" width="50.6" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="729.57" y="447.5" >evalu..</text>
+</g>
+<g >
+<title>[string]:20 (10 samples, 3.30%)</title><rect x="10.0" y="1141" width="38.9" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="13.00" y="1151.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (288 samples, 95.05%)</title><rect x="60.6" y="949" width="1121.6" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="63.63" y="959.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="949" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="959.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:check (9 samples, 2.97%)</title><rect x="309.9" y="613" width="35.0" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="312.87" y="623.5" >ev..</text>
+</g>
+<g >
+<title>evaluator.lua:check (10 samples, 3.30%)</title><rect x="1018.6" y="293" width="39.0" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1021.65" y="303.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (274 samples, 90.43%)</title><rect x="115.1" y="805" width="1067.1" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="118.15" y="815.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="357" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="367.5" >eva..</text>
+</g>
+<g >
+<title>evaluator.lua:check (11 samples, 3.63%)</title><rect x="469.5" y="549" width="42.9" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="472.54" y="559.5" >eval..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (224 samples, 73.93%)</title><rect x="309.9" y="645" width="872.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="312.87" y="655.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:17 (10 samples, 3.30%)</title><rect x="270.9" y="501" width="39.0" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="273.92" y="511.5" >[st..</text>
+</g>
+<g >
+<title>[string]:17 (9 samples, 2.97%)</title><rect x="469.5" y="325" width="35.1" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="472.54" y="335.5" >[s..</text>
+</g>
+<g >
+<title>[string]:__eq (15 samples, 4.95%)</title><rect x="512.4" y="501" width="58.4" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="515.38" y="511.5" >[strin..</text>
+</g>
+<g >
+<title>evaluator.lua:check (15 samples, 4.95%)</title><rect x="204.7" y="661" width="58.4" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="207.72" y="671.5" >evalua..</text>
+</g>
+<g >
+<title>evaluator.lua:check (10 samples, 3.30%)</title><rect x="10.0" y="133" width="38.9" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="13.00" y="143.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="204.7" y="309" width="42.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="207.72" y="319.5" >[str..</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="469.5" y="485" width="42.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="472.54" y="495.5" >[str..</text>
+</g>
+<g >
+<title>[string]:9 (9 samples, 2.97%)</title><rect x="212.5" y="245" width="35.1" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="215.51" y="255.5" >[s..</text>
+</g>
+<g >
+<title>terms-generators.lua:__eq (12 samples, 3.96%)</title><rect x="601.9" y="309" width="46.8" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="604.95" y="319.5" >term..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (211 samples, 69.64%)</title><rect x="360.5" y="613" width="821.7" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="363.50" y="623.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:8 (11 samples, 3.63%)</title><rect x="469.5" y="469" width="42.9" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="472.54" y="479.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="597" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="607.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (15 samples, 4.95%)</title><rect x="601.9" y="469" width="58.5" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="604.95" y="479.5" >[strin..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="677" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="687.5" >eva..</text>
+</g>
+<g >
+<title>terms-generators.lua:__eq (9 samples, 2.97%)</title><rect x="469.5" y="277" width="35.1" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="472.54" y="287.5" >te..</text>
+</g>
+<g >
+<title>[string]:8 (13 samples, 4.29%)</title><rect x="726.6" y="373" width="50.6" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="729.57" y="383.5" >[stri..</text>
+</g>
+<g >
+<title>[string]:__eq (10 samples, 3.30%)</title><rect x="687.6" y="373" width="39.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="690.62" y="383.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (215 samples, 70.96%)</title><rect x="344.9" y="629" width="837.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="347.92" y="639.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:14 (11 samples, 3.63%)</title><rect x="512.4" y="357" width="42.8" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="515.38" y="367.5" >[str..</text>
+</g>
+<g >
+<title>[string]:__eq (9 samples, 2.97%)</title><rect x="309.9" y="565" width="35.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="312.87" y="575.5" >[s..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="757" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="767.5" >eva..</text>
+</g>
+<g >
+<title>[string]:17 (9 samples, 2.97%)</title><rect x="391.7" y="357" width="35.0" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="394.65" y="367.5" >[s..</text>
+</g>
+<g >
+<title>[string]:9 (9 samples, 2.97%)</title><rect x="605.8" y="197" width="35.1" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="608.84" y="207.5" >[s..</text>
+</g>
+<g >
+<title>[string]:15 (11 samples, 3.63%)</title><rect x="469.5" y="437" width="42.9" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="472.54" y="447.5" >[str..</text>
+</g>
+<g >
+<title>[string]:__eq (11 samples, 3.63%)</title><rect x="204.7" y="357" width="42.9" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="207.72" y="367.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:check (10 samples, 3.30%)</title><rect x="687.6" y="453" width="39.0" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="690.62" y="463.5" >eva..</text>
+</g>
+<g >
+<title>[string]:39 (12 samples, 3.96%)</title><rect x="777.2" y="389" width="46.7" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="780.19" y="399.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (280 samples, 92.41%)</title><rect x="91.8" y="853" width="1090.4" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="94.78" y="863.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>evaluator.lua:infer (286 samples, 94.39%)</title><rect x="68.4" y="901" width="1113.8" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="71.42" y="911.5" >evaluator.lua:infer</text>
+</g>
+<g >
+<title>[string]:39 (10 samples, 3.30%)</title><rect x="270.9" y="597" width="39.0" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="273.92" y="607.5" >[st..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="165" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="175.5" >eva..</text>
+</g>
+<g >
+<title>[string]:39 (13 samples, 4.29%)</title><rect x="726.6" y="405" width="50.6" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="729.57" y="415.5" >[stri..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (10 samples, 3.30%)</title><rect x="10.0" y="421" width="38.9" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="431.5" >eva..</text>
+</g>
+<g >
+<title>[string]:__eq (12 samples, 3.96%)</title><rect x="601.9" y="373" width="46.8" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="604.95" y="383.5" >[str..</text>
+</g>
+<g >
+<title>evaluator.lua:infer (104 samples, 34.32%)</title><rect x="777.2" y="453" width="405.0" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="780.19" y="463.5" >evaluator.lua:infer</text>
+</g>
+</g>
+</svg>

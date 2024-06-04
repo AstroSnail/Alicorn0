@@ -1,0 +1,86 @@
+2024-06-03 23:13:28.222653 read code
+2024-06-03 23:13:28.222741 parsing code
+2024-06-03 23:13:28.335537 Expression -> terms
+2024-06-03 23:13:28.747742 value of parameter anchor: (follows)
+2024-06-03 23:13:28.747829 "bug in ascribed_name_with_tail"
+2024-06-03 23:13:28.747854 expected type of parameter anchor is :	terms-gen foreign unknown
+2024-06-03 23:13:29.497024 value of parameter anchor: (follows)
+2024-06-03 23:13:29.497116 "bug in ascribed_name_with_tail"
+2024-06-03 23:13:29.497144 expected type of parameter anchor is :	terms-gen foreign unknown
+2024-06-03 23:13:29.518898 value of parameter anchor: (follows)
+2024-06-03 23:13:29.518985 "bug in ascribed_name_with_tail"
+2024-06-03 23:13:29.519020 expected type of parameter anchor is :	terms-gen foreign unknown
+2024-06-03 23:13:29.530610 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.535035 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.535464 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.535609 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.540374 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.540430 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.553681 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.553836 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.554273 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.554409 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.558565 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.558606 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.560934 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.560963 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.569308 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.573370 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.575093 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.577554 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.579147 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.579300 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.583253 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.583455 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.609120 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.609203 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.609230 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.609254 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.610227 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.610256 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.610281 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.610305 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.613193 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.613400 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.613570 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.613617 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.617328 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.617392 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.617427 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.617462 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.625702 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.625887 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.626205 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.626278 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.627965 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.628110 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.628215 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.628294 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.629329 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.629360 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.630076 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.630370 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.630681 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.630862 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.651994 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.652088 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.652210 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.652242 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.653647 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.653679 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.653737 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.653766 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.666018 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.666174 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.666233 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.666274 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.666986 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.667014 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.667296 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.667626 TODO TODO TODO TODO TODO hit while evaluating prim_if
+2024-06-03 23:13:29.684872 got a term!
+2024-06-03 23:13:29.684947 Inferring
+2024-06-03 23:14:24.199594 Inferred!
+2024-06-03 23:14:24.199724 Evaluating
+2024-06-03 23:14:24.214699 result: (value term follows)
+2024-06-03 23:14:24.214784 [38;5;226mvalue.prim([0m"foobarbaz"[38;5;226m)[0m

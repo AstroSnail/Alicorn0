@@ -79,7 +79,7 @@ print("Inferring")
 local profiler = nil
 if profile_run then
 	profiler = require("jit.p")
-	profiler.start("G", profile_file)
+	profiler.start("FGi100", profile_file)
 end
 local type, usages, term = evaluator.infer(bound_expr, terms.typechecking_context())
 if profile_run then
