@@ -1,0 +1,2805 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="1990" onload="init(evt)" viewBox="0 0 1200 1990" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="1990.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >10B</text>
+<text id="details" x="10.00" y="1973" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="1973" > </text>
+<g id="frames">
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="397.6" y="309" width="9.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="400.64" y="319.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1621" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1631.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1269" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1279.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (19 samples, 1.62%)</title><rect x="716.0" y="341" width="19.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="718.99" y="351.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (73 samples, 6.21%)</title><rect x="18.0" y="213" width="73.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="21.03" y="223.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="627.6" y="309" width="10.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="630.62" y="319.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="861.6" y="485" width="8.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="864.61" y="495.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (9 samples, 0.77%)</title><rect x="1012.2" y="421" width="9.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="1015.25" y="431.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (22 samples, 1.87%)</title><rect x="871.7" y="565" width="22.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="874.65" y="575.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (17 samples, 1.45%)</title><rect x="508.1" y="373" width="17.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="511.11" y="383.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="618.6" y="309" width="9.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="621.58" y="319.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms-generators.lua:374 (590 samples, 50.21%)</title><rect x="10.0" y="629" width="592.5" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="13.00" y="639.5" >Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="482.0" y="453" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="485.00" y="463.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:17 (145 samples, 12.34%)</title><rect x="610.5" y="565" width="145.7" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="613.54" y="575.5" >Lua  nil: derive-e..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="230.9" y="245" width="9.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="233.94" y="255.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1541" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1551.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="230.9" y="261" width="9.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="233.94" y="271.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:17 (590 samples, 50.21%)</title><rect x="10.0" y="677" width="592.5" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="13.00" y="687.5" >Lua  nil: derive-eq_enum:17</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:14 (880 samples, 74.89%)</title><rect x="10.0" y="725" width="883.7" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="13.00" y="735.5" >Lua  nil: derive-eq_enum:14</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (59 samples, 5.02%)</title><rect x="406.7" y="325" width="59.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="409.68" y="335.5" >Lua me..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:17 (295 samples, 25.11%)</title><rect x="10.0" y="597" width="296.3" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="13.00" y="607.5" >Lua  nil: derive-eq_enum:17</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms-generators.lua:374 (73 samples, 6.21%)</title><rect x="18.0" y="277" width="73.3" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="21.03" y="287.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (22 samples, 1.87%)</title><rect x="815.4" y="469" width="22.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="818.41" y="479.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (22 samples, 1.87%)</title><rect x="815.4" y="485" width="22.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="818.41" y="495.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="77.3" y="37" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="80.29" y="47.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="77.3" y="53" width="9.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="80.29" y="63.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (151 samples, 12.85%)</title><rect x="314.3" y="421" width="151.6" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="317.29" y="431.5" >Lua metamethod __eq..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="823.4" y="389" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="826.45" y="399.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (145 samples, 12.34%)</title><rect x="18.0" y="421" width="145.7" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="21.03" y="431.5" >Lua metamethod __e..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (226 samples, 19.23%)</title><rect x="610.5" y="613" width="227.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="613.54" y="623.5" >Lua metamethod __eq: derive-eq..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (74 samples, 6.30%)</title><rect x="978.1" y="597" width="74.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="981.10" y="607.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="690.9" y="437" width="9.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="693.89" y="447.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="909.8" y="405" width="10.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="912.81" y="415.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="589.5" y="405" width="9.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="592.46" y="415.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (23 samples, 1.96%)</title><rect x="955.0" y="421" width="23.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="958.00" y="431.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (21 samples, 1.79%)</title><rect x="735.1" y="373" width="21.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="738.07" y="383.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (74 samples, 6.30%)</title><rect x="314.3" y="309" width="74.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="317.29" y="319.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:15 (151 samples, 12.85%)</title><rect x="314.3" y="517" width="151.6" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="317.29" y="527.5" >Lua  nil: derive-eq..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (8 samples, 0.68%)</title><rect x="1150.8" y="613" width="8.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="1153.83" y="623.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="397.6" y="357" width="9.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="400.64" y="367.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:14 (76 samples, 6.47%)</title><rect x="901.8" y="565" width="76.3" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="904.78" y="575.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (21 samples, 1.79%)</title><rect x="661.8" y="277" width="21.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="664.76" y="287.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (17 samples, 1.45%)</title><rect x="1150.8" y="693" width="17.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1153.83" y="703.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (54 samples, 4.60%)</title><rect x="492.0" y="469" width="54.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="495.04" y="479.5" >Lua  ..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="230.9" y="293" width="9.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="233.94" y="303.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (73 samples, 6.21%)</title><rect x="18.0" y="261" width="73.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="21.03" y="271.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (22 samples, 1.87%)</title><rect x="69.3" y="133" width="22.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="72.25" y="143.5" >L..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (72 samples, 6.13%)</title><rect x="91.3" y="325" width="72.4" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="94.34" y="335.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (19 samples, 1.62%)</title><rect x="562.3" y="501" width="19.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="565.34" y="511.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (10 samples, 0.85%)</title><rect x="963.0" y="373" width="10.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="966.04" y="383.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (59 samples, 5.02%)</title><rect x="247.0" y="453" width="59.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="250.00" y="463.5" >Lua me..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="879.7" y="501" width="9.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="882.69" y="511.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="373.5" y="117" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="376.54" y="127.5" ></text>
+</g>
+<g >
+<title>Lua field infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1877" width="1180.0" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="13.00" y="1887.5" >Lua field infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (23 samples, 1.96%)</title><rect x="442.8" y="277" width="23.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="445.83" y="287.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (72 samples, 6.13%)</title><rect x="91.3" y="309" width="72.4" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="94.34" y="319.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="373.5" y="181" width="9.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="376.54" y="191.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (23 samples, 1.96%)</title><rect x="442.8" y="293" width="23.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="445.83" y="303.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (56 samples, 4.77%)</title><rect x="699.9" y="405" width="56.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="702.92" y="415.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="331.4" y="229" width="10.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="334.36" y="239.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="99.4" y="261" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="102.38" y="271.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (18 samples, 1.53%)</title><rect x="797.3" y="501" width="18.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="800.34" y="511.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms-generators.lua:374 (76 samples, 6.47%)</title><rect x="901.8" y="549" width="76.3" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="904.78" y="559.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="451.9" y="213" width="9.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="454.87" y="223.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (19 samples, 1.62%)</title><rect x="265.1" y="373" width="19.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="268.08" y="383.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (1,175 samples, 100.00%)</title><rect x="10.0" y="837" width="1180.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="13.00" y="847.5" >Lua metamethod __eq: derive-eq_enum:46</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="373.5" y="165" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="376.54" y="175.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="643.7" y="213" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="646.69" y="223.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="1175.9" y="645" width="9.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1178.94" y="655.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (80 samples, 6.81%)</title><rect x="465.9" y="501" width="80.4" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="468.93" y="511.5" >Lua metam..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="562.3" y="405" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="565.34" y="415.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="77.3" y="101" width="9.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="80.29" y="111.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (150 samples, 12.77%)</title><rect x="901.8" y="613" width="150.6" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="904.78" y="623.5" >Lua metamethod __eq..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (231 samples, 19.66%)</title><rect x="314.3" y="533" width="232.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="317.29" y="543.5" >Lua metamethod __eq: derive-eq..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="963.0" y="357" width="10.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="966.04" y="367.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (9 samples, 0.77%)</title><rect x="1094.6" y="533" width="9.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="1097.60" y="543.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="1175.9" y="629" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1178.94" y="639.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:15 (145 samples, 12.34%)</title><rect x="18.0" y="437" width="145.7" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="21.03" y="447.5" >Lua  nil: derive-e..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1365" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1375.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1605" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1615.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="919.9" y="405" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="922.86" y="415.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (18 samples, 1.53%)</title><rect x="853.6" y="549" width="18.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="856.57" y="559.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (19 samples, 1.62%)</title><rect x="562.3" y="469" width="19.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="565.34" y="479.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (21 samples, 1.79%)</title><rect x="735.1" y="357" width="21.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="738.07" y="367.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (17 samples, 1.45%)</title><rect x="1150.8" y="629" width="17.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1153.83" y="639.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (57 samples, 4.85%)</title><rect x="331.4" y="245" width="57.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="334.36" y="255.5" >Lua me..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1093" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1103.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1410 (1,175 samples, 100.00%)</title><rect x="10.0" y="933" width="1180.0" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="13.00" y="943.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1410</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1461" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1471.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (55 samples, 4.68%)</title><rect x="627.6" y="341" width="55.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="630.62" y="351.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (232 samples, 19.74%)</title><rect x="901.8" y="725" width="233.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="904.78" y="735.5" >Lua metamethod __eq: derive-eq..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (23 samples, 1.96%)</title><rect x="365.5" y="213" width="23.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="368.51" y="223.5" >L..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1349" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1359.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="690.9" y="421" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="693.89" y="431.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (57 samples, 4.85%)</title><rect x="331.4" y="277" width="57.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="334.36" y="287.5" >Lua  n..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="546.3" y="485" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="549.27" y="495.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (10 samples, 0.85%)</title><rect x="963.0" y="325" width="10.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="966.04" y="335.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (17 samples, 1.45%)</title><rect x="1150.8" y="645" width="17.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1153.83" y="655.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:38 (8 samples, 0.68%)</title><rect x="845.5" y="581" width="8.1" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="848.54" y="591.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (73 samples, 6.21%)</title><rect x="18.0" y="229" width="73.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="21.03" y="239.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1285" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1295.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="43.1" y="133" width="8.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="46.14" y="143.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1205" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1215.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1781" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1791.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (8 samples, 0.68%)</title><rect x="35.1" y="149" width="8.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="38.11" y="159.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="322.3" y="213" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="325.32" y="223.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (17 samples, 1.45%)</title><rect x="508.1" y="389" width="17.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="511.11" y="399.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="618.6" y="325" width="9.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="621.58" y="335.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (19 samples, 1.62%)</title><rect x="935.9" y="389" width="19.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="938.92" y="399.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (10 samples, 0.85%)</title><rect x="909.8" y="437" width="10.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="912.81" y="447.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (56 samples, 4.77%)</title><rect x="996.2" y="549" width="56.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="999.18" y="559.5" >Lua  ..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="690.9" y="373" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="693.89" y="383.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="179.7" y="341" width="9.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="182.72" y="351.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (22 samples, 1.87%)</title><rect x="1030.3" y="469" width="22.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1033.32" y="479.5" >L..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (10 samples, 0.85%)</title><rect x="292.2" y="373" width="10.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="295.20" y="383.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1013" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1023.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (76 samples, 6.47%)</title><rect x="901.8" y="533" width="76.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="904.78" y="543.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (18 samples, 1.53%)</title><rect x="51.2" y="149" width="18.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="54.17" y="159.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="204.8" y="261" width="10.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="207.83" y="271.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="996.2" y="485" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="999.18" y="495.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="743.1" y="309" width="9.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="746.11" y="319.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="347.4" y="133" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="350.43" y="143.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms-generators.lua:374 (151 samples, 12.85%)</title><rect x="314.3" y="437" width="151.6" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="317.29" y="447.5" >Lua metamethod __eq..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (9 samples, 0.77%)</title><rect x="756.2" y="549" width="9.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="759.16" y="559.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="373.5" y="149" width="9.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="376.54" y="159.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="474.0" y="453" width="8.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="476.97" y="463.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (295 samples, 25.11%)</title><rect x="306.3" y="581" width="296.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="309.26" y="591.5" >Lua metamethod __eq: @/home/erry/git/gi..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="1120.7" y="549" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1123.71" y="559.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="690.9" y="405" width="9.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="693.89" y="415.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (19 samples, 1.62%)</title><rect x="935.9" y="421" width="19.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="938.92" y="431.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="257.0" y="405" width="8.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="260.05" y="415.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (151 samples, 12.85%)</title><rect x="314.3" y="469" width="151.6" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="317.29" y="479.5" >Lua metamethod __eq..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="669.8" y="245" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="672.80" y="255.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1189" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1199.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:14 (590 samples, 50.21%)</title><rect x="10.0" y="645" width="592.5" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="13.00" y="655.5" >Lua  nil: derive-eq_enum:14</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="963.0" y="309" width="10.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="966.04" y="319.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="781.3" y="485" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="784.27" y="495.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (21 samples, 1.79%)</title><rect x="142.6" y="197" width="21.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="145.56" y="207.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="1037.4" y="437" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1040.35" y="447.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (74 samples, 6.30%)</title><rect x="314.3" y="293" width="74.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="317.29" y="303.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (10 samples, 0.85%)</title><rect x="986.1" y="517" width="10.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="989.14" y="527.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="643.7" y="293" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="646.69" y="303.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (56 samples, 4.77%)</title><rect x="781.3" y="549" width="56.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="784.27" y="559.5" >Lua  ..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (72 samples, 6.13%)</title><rect x="610.5" y="389" width="72.4" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="613.54" y="399.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="618.6" y="293" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="621.58" y="303.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (295 samples, 25.11%)</title><rect x="10.0" y="581" width="296.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="13.00" y="591.5" >Lua metamethod __eq: derive-eq_enum:46</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (76 samples, 6.47%)</title><rect x="901.8" y="517" width="76.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="904.78" y="527.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (9 samples, 0.77%)</title><rect x="935.9" y="341" width="9.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="938.92" y="351.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1845" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1855.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (82 samples, 6.98%)</title><rect x="1052.4" y="709" width="82.4" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1055.42" y="719.5" >Lua  nil:..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1445" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1455.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:17 (73 samples, 6.21%)</title><rect x="18.0" y="325" width="73.3" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="21.03" y="335.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1397" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1407.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:15 (880 samples, 74.89%)</title><rect x="10.0" y="789" width="883.7" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="13.00" y="799.5" >Lua  nil: derive-eq_enum:15</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (22 samples, 1.87%)</title><rect x="69.3" y="117" width="22.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="72.25" y="127.5" >L..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1685" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1695.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (23 samples, 1.96%)</title><rect x="955.0" y="389" width="23.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="958.00" y="399.5" >L..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (1,175 samples, 100.00%)</title><rect x="10.0" y="821" width="1180.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="13.00" y="831.5" >Lua  nil: derive-eq_enum:8</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:17 (151 samples, 12.85%)</title><rect x="314.3" y="485" width="151.6" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="317.29" y="495.5" >Lua  nil: derive-eq..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (74 samples, 6.30%)</title><rect x="314.3" y="389" width="74.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="317.29" y="399.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (22 samples, 1.87%)</title><rect x="284.2" y="421" width="22.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="287.16" y="431.5" >L..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (21 samples, 1.79%)</title><rect x="581.4" y="501" width="21.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="584.42" y="511.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (19 samples, 1.62%)</title><rect x="423.8" y="293" width="19.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="426.75" y="303.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (19 samples, 1.62%)</title><rect x="562.3" y="453" width="19.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="565.34" y="463.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="1052.4" y="661" width="10.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="1055.42" y="671.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (80 samples, 6.81%)</title><rect x="465.9" y="485" width="80.4" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="468.93" y="495.5" >Lua metam..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1301" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1311.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (8 samples, 0.68%)</title><rect x="853.6" y="501" width="8.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="856.57" y="511.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1429" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1439.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1525" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1535.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="179.7" y="389" width="9.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="182.72" y="399.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:15 (150 samples, 12.77%)</title><rect x="901.8" y="709" width="150.6" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="904.78" y="719.5" >Lua  nil: derive-eq..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (55 samples, 4.68%)</title><rect x="627.6" y="357" width="55.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="630.62" y="367.5" >Lua  ..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1152 (1,175 samples, 100.00%)</title><rect x="10.0" y="1061" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1071.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1152</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="1068.5" y="645" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1071.49" y="655.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (56 samples, 4.77%)</title><rect x="546.3" y="549" width="56.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="549.27" y="559.5" >Lua  ..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (81 samples, 6.89%)</title><rect x="756.2" y="581" width="81.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="759.16" y="591.5" >Lua metam..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="1175.9" y="597" width="9.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1178.94" y="607.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (145 samples, 12.34%)</title><rect x="18.0" y="389" width="145.7" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="21.03" y="399.5" >Lua metamethod __e..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (55 samples, 4.68%)</title><rect x="1134.8" y="709" width="55.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1137.77" y="719.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1109" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1119.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="1120.7" y="517" width="9.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1123.71" y="527.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="772.2" y="517" width="9.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="775.23" y="527.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="77.3" y="69" width="9.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="80.29" y="79.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="51.2" y="133" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="54.17" y="143.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:38 (8 samples, 0.68%)</title><rect x="861.6" y="501" width="8.0" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="864.61" y="511.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (21 samples, 1.79%)</title><rect x="525.2" y="405" width="21.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="528.18" y="415.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (21 samples, 1.79%)</title><rect x="581.4" y="485" width="21.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="584.42" y="495.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="179.7" y="373" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="182.72" y="383.5" ></text>
+</g>
+<g >
+<title>Lua upvalue check: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:648 (1,175 samples, 100.00%)</title><rect x="10.0" y="885" width="1180.0" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="13.00" y="895.5" >Lua upvalue check: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:648</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="423.8" y="213" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="426.75" y="223.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="853.6" y="517" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="856.57" y="527.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (23 samples, 1.96%)</title><rect x="955.0" y="405" width="23.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="958.00" y="415.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="533.2" y="309" width="8.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="536.22" y="319.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="743.1" y="277" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="746.11" y="287.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="1150.8" y="597" width="8.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1153.83" y="607.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (17 samples, 1.45%)</title><rect x="1150.8" y="677" width="17.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1153.83" y="687.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (228 samples, 19.40%)</title><rect x="18.0" y="469" width="229.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="21.03" y="479.5" >Lua  nil: derive-eq_enum:8</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (55 samples, 4.68%)</title><rect x="627.6" y="325" width="55.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="630.62" y="335.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (19 samples, 1.62%)</title><rect x="265.1" y="421" width="19.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="268.08" y="431.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="26.1" y="149" width="9.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="29.07" y="159.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="772.2" y="501" width="9.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="775.23" y="511.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="265.1" y="325" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="268.08" y="335.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (83 samples, 7.06%)</title><rect x="163.7" y="405" width="83.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="166.65" y="415.5" >Lua metam..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (74 samples, 6.30%)</title><rect x="978.1" y="581" width="74.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="981.10" y="591.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (55 samples, 4.68%)</title><rect x="1134.8" y="725" width="55.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1137.77" y="735.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (145 samples, 12.34%)</title><rect x="610.5" y="581" width="145.7" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="613.54" y="591.5" >Lua metamethod __e..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (59 samples, 5.02%)</title><rect x="247.0" y="469" width="59.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="250.00" y="479.5" >Lua  n..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="1175.9" y="581" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1178.94" y="591.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (58 samples, 4.94%)</title><rect x="188.8" y="389" width="58.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="191.76" y="399.5" >Lua  n..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (22 samples, 1.87%)</title><rect x="1030.3" y="501" width="22.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1033.32" y="511.5" >L..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:17 (150 samples, 12.77%)</title><rect x="901.8" y="677" width="150.6" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="904.78" y="687.5" >Lua  nil: derive-eq..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms-generators.lua:374 (145 samples, 12.34%)</title><rect x="18.0" y="357" width="145.7" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="21.03" y="367.5" >Lua metamethod __e..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (59 samples, 5.02%)</title><rect x="406.7" y="341" width="59.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="409.68" y="351.5" >Lua me..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:17 (72 samples, 6.13%)</title><rect x="610.5" y="485" width="72.4" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="613.54" y="495.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="1052.4" y="645" width="10.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1055.42" y="655.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="690.9" y="389" width="9.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="693.89" y="399.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="1094.6" y="517" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1097.60" y="527.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="1175.9" y="613" width="9.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1178.94" y="623.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="179.7" y="357" width="9.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="182.72" y="367.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (56 samples, 4.77%)</title><rect x="996.2" y="517" width="56.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="999.18" y="527.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="823.4" y="437" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="826.45" y="447.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (10 samples, 0.85%)</title><rect x="986.1" y="549" width="10.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="989.14" y="559.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="204.8" y="277" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="207.83" y="287.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="99.4" y="277" width="9.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="102.38" y="287.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="879.7" y="485" width="9.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="882.69" y="495.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:14 (151 samples, 12.85%)</title><rect x="314.3" y="453" width="151.6" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="317.29" y="463.5" >Lua  nil: derive-eq..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (21 samples, 1.79%)</title><rect x="581.4" y="469" width="21.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="584.42" y="479.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (18 samples, 1.53%)</title><rect x="204.8" y="309" width="18.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="207.83" y="319.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (54 samples, 4.60%)</title><rect x="492.0" y="437" width="54.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="495.04" y="447.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms-generators.lua:374 (74 samples, 6.30%)</title><rect x="314.3" y="357" width="74.3" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="317.29" y="367.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (9 samples, 0.77%)</title><rect x="347.4" y="149" width="9.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="350.43" y="159.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (17 samples, 1.45%)</title><rect x="1150.8" y="661" width="17.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1153.83" y="671.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (1,175 samples, 100.00%)</title><rect x="10.0" y="805" width="1180.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="13.00" y="815.5" >Lua metamethod __eq: derive-eq_enum:46</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="1068.5" y="629" width="9.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1071.49" y="639.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (22 samples, 1.87%)</title><rect x="1167.9" y="677" width="22.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1170.91" y="687.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (295 samples, 25.11%)</title><rect x="893.7" y="773" width="296.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="896.74" y="783.5" >Lua metamethod __eq: @/home/erry/git/gi..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="1012.2" y="405" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1015.25" y="415.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (19 samples, 1.62%)</title><rect x="716.0" y="325" width="19.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="718.99" y="335.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (19 samples, 1.62%)</title><rect x="562.3" y="437" width="19.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="565.34" y="447.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (58 samples, 4.94%)</title><rect x="188.8" y="357" width="58.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="191.76" y="367.5" >Lua me..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (19 samples, 1.62%)</title><rect x="562.3" y="485" width="19.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="565.34" y="495.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (58 samples, 4.94%)</title><rect x="919.9" y="453" width="58.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="922.86" y="463.5" >Lua me..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (81 samples, 6.89%)</title><rect x="756.2" y="565" width="81.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="759.16" y="575.5" >Lua metam..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="124.5" y="149" width="10.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="127.49" y="159.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="265.1" y="341" width="10.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="268.08" y="351.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="845.5" y="565" width="8.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="848.54" y="575.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="772.2" y="549" width="9.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="775.23" y="559.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (17 samples, 1.45%)</title><rect x="508.1" y="405" width="17.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="511.11" y="415.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (9 samples, 0.77%)</title><rect x="699.9" y="389" width="9.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="702.92" y="399.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (295 samples, 25.11%)</title><rect x="306.3" y="565" width="296.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="309.26" y="575.5" >Lua metamethod __eq: derive-eq_enum:46</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (10 samples, 0.85%)</title><rect x="292.2" y="341" width="10.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="295.20" y="351.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="451.9" y="261" width="9.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="454.87" y="271.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (18 samples, 1.53%)</title><rect x="1012.2" y="501" width="18.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1015.25" y="511.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (18 samples, 1.53%)</title><rect x="1094.6" y="613" width="18.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1097.60" y="623.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (23 samples, 1.96%)</title><rect x="365.5" y="197" width="23.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="368.51" y="207.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (295 samples, 25.11%)</title><rect x="10.0" y="501" width="296.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="13.00" y="511.5" >Lua metamethod __eq: @/home/erry/git/gi..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (21 samples, 1.79%)</title><rect x="525.2" y="389" width="21.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="528.18" y="399.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (290 samples, 24.68%)</title><rect x="602.5" y="661" width="291.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="605.51" y="671.5" >Lua metamethod __eq: @/home/erry/git/gi..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="26.1" y="133" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="29.07" y="143.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="589.5" y="389" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="592.46" y="399.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms-generators.lua:374 (72 samples, 6.13%)</title><rect x="610.5" y="437" width="72.4" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="613.54" y="447.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (22 samples, 1.87%)</title><rect x="871.7" y="581" width="22.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="874.65" y="591.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="1094.6" y="549" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1097.60" y="559.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (81 samples, 6.89%)</title><rect x="756.2" y="597" width="81.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="759.16" y="607.5" >Lua  nil:..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="879.7" y="517" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="882.69" y="527.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="406.7" y="293" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="409.68" y="303.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (56 samples, 4.77%)</title><rect x="35.1" y="197" width="56.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="38.11" y="207.5" >Lua  ..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (145 samples, 12.34%)</title><rect x="610.5" y="549" width="145.7" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="613.54" y="559.5" >Lua metamethod __e..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (18 samples, 1.53%)</title><rect x="347.4" y="229" width="18.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="350.43" y="239.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (76 samples, 6.47%)</title><rect x="901.8" y="581" width="76.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="904.78" y="591.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="150.6" y="149" width="9.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="153.60" y="159.5" ></text>
+</g>
+<g >
+<title>all (1,175 samples, 100%)</title><rect x="10.0" y="1941" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="1951.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (590 samples, 50.21%)</title><rect x="10.0" y="661" width="592.5" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="13.00" y="671.5" >Lua metamethod __eq: derive-eq_enum:46</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="451.9" y="229" width="9.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="454.87" y="239.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="465.9" y="453" width="8.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="468.93" y="463.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="781.3" y="501" width="10.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="784.27" y="511.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (21 samples, 1.79%)</title><rect x="661.8" y="309" width="21.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="664.76" y="319.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (290 samples, 24.68%)</title><rect x="602.5" y="677" width="291.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="605.51" y="687.5" >Lua  nil: derive-eq_enum:9</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (295 samples, 25.11%)</title><rect x="893.7" y="757" width="296.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="896.74" y="767.5" >Lua metamethod __eq: derive-eq_enum:46</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (74 samples, 6.30%)</title><rect x="978.1" y="565" width="74.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="981.10" y="575.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (73 samples, 6.21%)</title><rect x="18.0" y="245" width="73.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="21.03" y="255.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="59.2" y="53" width="8.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="62.21" y="63.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="986.1" y="485" width="10.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="989.14" y="495.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1493" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1503.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (24 samples, 2.04%)</title><rect x="222.9" y="341" width="24.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="225.90" y="351.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="1120.7" y="501" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1123.71" y="511.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (145 samples, 12.34%)</title><rect x="18.0" y="341" width="145.7" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="21.03" y="351.5" >Lua metamethod __e..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (18 samples, 1.53%)</title><rect x="124.5" y="197" width="18.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="127.49" y="207.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="716.0" y="309" width="10.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="718.99" y="319.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (21 samples, 1.79%)</title><rect x="142.6" y="213" width="21.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="145.56" y="223.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (72 samples, 6.13%)</title><rect x="610.5" y="421" width="72.4" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="613.54" y="431.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (55 samples, 4.68%)</title><rect x="108.4" y="245" width="55.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="111.42" y="255.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="230.9" y="229" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="233.94" y="239.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="99.4" y="245" width="9.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="102.38" y="255.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="669.8" y="197" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="672.80" y="207.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (54 samples, 4.60%)</title><rect x="492.0" y="453" width="54.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="495.04" y="463.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (55 samples, 4.68%)</title><rect x="108.4" y="277" width="55.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="111.42" y="287.5" >Lua  ..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (8 samples, 0.68%)</title><rect x="533.2" y="373" width="8.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="536.22" y="383.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="397.6" y="325" width="9.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="400.64" y="335.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="347.4" y="213" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="350.43" y="223.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="699.9" y="373" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="702.92" y="383.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (72 samples, 6.13%)</title><rect x="610.5" y="469" width="72.4" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="613.54" y="479.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="179.7" y="325" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="182.72" y="335.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (73 samples, 6.21%)</title><rect x="18.0" y="309" width="73.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="21.03" y="319.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1717" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1727.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="533.2" y="357" width="8.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="536.22" y="367.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1557" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1567.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="163.7" y="373" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="166.65" y="383.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (8 samples, 0.68%)</title><rect x="508.1" y="341" width="8.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="511.11" y="351.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (18 samples, 1.53%)</title><rect x="124.5" y="229" width="18.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="127.49" y="239.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1125" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1135.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (19 samples, 1.62%)</title><rect x="265.1" y="405" width="19.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="268.08" y="415.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (77 samples, 6.55%)</title><rect x="388.6" y="389" width="77.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="391.60" y="399.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (56 samples, 4.77%)</title><rect x="781.3" y="517" width="56.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="784.27" y="527.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="879.7" y="533" width="9.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="882.69" y="543.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="322.3" y="277" width="9.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="325.32" y="287.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (22 samples, 1.87%)</title><rect x="1112.7" y="597" width="22.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1115.67" y="607.5" >L..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (18 samples, 1.53%)</title><rect x="1012.2" y="469" width="18.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1015.25" y="479.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="716.0" y="293" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="718.99" y="303.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="879.7" y="469" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="882.69" y="479.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (24 samples, 2.04%)</title><rect x="222.9" y="309" width="24.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="225.90" y="319.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="451.9" y="245" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="454.87" y="255.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:38 (8 samples, 0.68%)</title><rect x="43.1" y="149" width="8.1" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="46.14" y="159.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="743.1" y="341" width="9.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="746.11" y="351.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="589.5" y="421" width="9.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="592.46" y="431.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (19 samples, 1.62%)</title><rect x="265.1" y="389" width="19.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="268.08" y="399.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (82 samples, 6.98%)</title><rect x="1052.4" y="677" width="82.4" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1055.42" y="687.5" >Lua metam..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="322.3" y="261" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="325.32" y="271.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="981" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="991.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (21 samples, 1.79%)</title><rect x="142.6" y="229" width="21.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="145.56" y="239.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (231 samples, 19.66%)</title><rect x="314.3" y="549" width="232.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="317.29" y="559.5" >Lua  nil: derive-eq_enum:8</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="188.8" y="341" width="10.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="191.76" y="351.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:14 (73 samples, 6.21%)</title><rect x="18.0" y="293" width="73.3" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="21.03" y="303.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (58 samples, 4.94%)</title><rect x="919.9" y="437" width="58.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="922.86" y="447.5" >Lua me..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (22 samples, 1.87%)</title><rect x="1112.7" y="581" width="22.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1115.67" y="591.5" >L..</text>
+</g>
+<g >
+<title>main local fn: @/home/erry/git/github.com/Fundament-Software/Alicorn0/runtest.lua:132 (1,175 samples, 100.00%)</title><rect x="10.0" y="1893" width="1180.0" height="15.0" fill="rgb(234,133,31)" rx="2" ry="2" />
+<text  x="13.00" y="1903.5" >main local fn: @/home/erry/git/github.com/Fundament-Software/Alicorn0/runtest.lua:132</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (19 samples, 1.62%)</title><rect x="423.8" y="277" width="19.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="426.75" y="287.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (18 samples, 1.53%)</title><rect x="1094.6" y="565" width="18.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1097.60" y="575.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (55 samples, 4.68%)</title><rect x="1134.8" y="741" width="55.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1137.77" y="751.5" >Lua  ..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (74 samples, 6.30%)</title><rect x="314.3" y="325" width="74.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="317.29" y="335.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="247.0" y="405" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="250.00" y="415.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (295 samples, 25.11%)</title><rect x="893.7" y="789" width="296.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="896.74" y="799.5" >Lua  nil: derive-eq_enum:9</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (18 samples, 1.53%)</title><rect x="643.7" y="309" width="18.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="646.69" y="319.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="247.0" y="421" width="10.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="250.00" y="431.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (17 samples, 1.45%)</title><rect x="508.1" y="421" width="17.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="511.11" y="431.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (10 samples, 0.85%)</title><rect x="1037.4" y="421" width="10.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1040.35" y="431.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="77.3" y="85" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="80.29" y="95.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="965" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="975.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1637" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1647.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="397.6" y="293" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="400.64" y="303.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="99.4" y="213" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="102.38" y="223.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (80 samples, 6.81%)</title><rect x="465.9" y="517" width="80.4" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="468.93" y="527.5" >Lua  nil:..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="331.4" y="213" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="334.36" y="223.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="797.3" y="485" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="800.34" y="495.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="26.1" y="165" width="9.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="29.07" y="175.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="108.4" y="213" width="10.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="111.42" y="223.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="837.5" y="565" width="8.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="840.51" y="575.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="997" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1007.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1221" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1231.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (228 samples, 19.40%)</title><rect x="18.0" y="453" width="229.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="21.03" y="463.5" >Lua metamethod __eq: derive-eq..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="1120.7" y="533" width="9.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1123.71" y="543.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:14 (72 samples, 6.13%)</title><rect x="610.5" y="453" width="72.4" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="613.54" y="463.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (73 samples, 6.21%)</title><rect x="682.9" y="485" width="73.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="685.85" y="495.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (22 samples, 1.87%)</title><rect x="69.3" y="149" width="22.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="72.25" y="159.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (10 samples, 0.85%)</title><rect x="909.8" y="421" width="10.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="912.81" y="431.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="589.5" y="437" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="592.46" y="447.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="797.3" y="421" width="10.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="800.34" y="431.5" ></text>
+</g>
+<g >
+<title>Lua global require: bundle:deps/require.lua:310 (1,175 samples, 100.00%)</title><rect x="10.0" y="1909" width="1180.0" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="13.00" y="1919.5" >Lua global require: bundle:deps/require.lua:310</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (77 samples, 6.55%)</title><rect x="388.6" y="373" width="77.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="391.60" y="383.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (72 samples, 6.13%)</title><rect x="610.5" y="373" width="72.4" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="613.54" y="383.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (18 samples, 1.53%)</title><rect x="643.7" y="261" width="18.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="646.69" y="271.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:38 (8 samples, 0.68%)</title><rect x="59.2" y="69" width="8.0" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="62.21" y="79.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (77 samples, 6.55%)</title><rect x="388.6" y="405" width="77.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="391.60" y="415.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:17 (880 samples, 74.89%)</title><rect x="10.0" y="757" width="883.7" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="13.00" y="767.5" >Lua  nil: derive-eq_enum:17</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (73 samples, 6.21%)</title><rect x="682.9" y="453" width="73.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="685.85" y="463.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="51.2" y="85" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="54.17" y="95.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="124.5" y="165" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="127.49" y="175.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="26.1" y="181" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="29.07" y="191.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="322.3" y="229" width="9.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="325.32" y="239.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (19 samples, 1.62%)</title><rect x="716.0" y="373" width="19.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="718.99" y="383.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (56 samples, 4.77%)</title><rect x="699.9" y="421" width="56.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="702.92" y="431.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1033 (1,175 samples, 100.00%)</title><rect x="10.0" y="917" width="1180.0" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="13.00" y="927.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1033</text>
+</g>
+<g >
+<title>Lua upvalue check: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:693 (1,175 samples, 100.00%)</title><rect x="10.0" y="901" width="1180.0" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="13.00" y="911.5" >Lua upvalue check: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:693</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (295 samples, 25.11%)</title><rect x="306.3" y="597" width="296.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="309.26" y="607.5" >Lua  nil: derive-eq_enum:9</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (57 samples, 4.85%)</title><rect x="1077.5" y="645" width="57.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1080.52" y="655.5" >Lua me..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1669" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1679.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (18 samples, 1.53%)</title><rect x="347.4" y="197" width="18.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="350.43" y="207.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (23 samples, 1.96%)</title><rect x="442.8" y="309" width="23.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="445.83" y="319.5" >L..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:14 (74 samples, 6.30%)</title><rect x="314.3" y="373" width="74.3" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="317.29" y="383.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (56 samples, 4.77%)</title><rect x="35.1" y="181" width="56.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="38.11" y="191.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (22 samples, 1.87%)</title><rect x="1030.3" y="485" width="22.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1033.32" y="495.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (73 samples, 6.21%)</title><rect x="682.9" y="469" width="73.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="685.85" y="479.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="772.2" y="485" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="775.23" y="495.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (295 samples, 25.11%)</title><rect x="10.0" y="517" width="296.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="13.00" y="527.5" >Lua  nil: derive-eq_enum:9</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (9 samples, 0.77%)</title><rect x="492.0" y="421" width="9.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="495.04" y="431.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (8 samples, 0.68%)</title><rect x="533.2" y="325" width="8.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="536.22" y="335.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="1068.5" y="613" width="9.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1071.49" y="623.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (56 samples, 4.77%)</title><rect x="837.5" y="629" width="56.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="840.51" y="639.5" >Lua  ..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (21 samples, 1.79%)</title><rect x="661.8" y="293" width="21.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="664.76" y="303.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (22 samples, 1.87%)</title><rect x="284.2" y="389" width="22.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="287.16" y="399.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (18 samples, 1.53%)</title><rect x="124.5" y="181" width="18.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="127.49" y="191.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1509" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1519.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (10 samples, 0.85%)</title><rect x="1037.4" y="453" width="10.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1040.35" y="463.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (18 samples, 1.53%)</title><rect x="643.7" y="277" width="18.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="646.69" y="287.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="618.6" y="341" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="621.58" y="351.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (56 samples, 4.77%)</title><rect x="699.9" y="437" width="56.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="702.92" y="447.5" >Lua  ..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (10 samples, 0.85%)</title><rect x="963.0" y="341" width="10.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="966.04" y="351.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (22 samples, 1.87%)</title><rect x="284.2" y="405" width="22.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="287.16" y="415.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="1012.2" y="437" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1015.25" y="447.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (18 samples, 1.53%)</title><rect x="797.3" y="453" width="18.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="800.34" y="463.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (18 samples, 1.53%)</title><rect x="347.4" y="181" width="18.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="350.43" y="191.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (56 samples, 4.77%)</title><rect x="781.3" y="533" width="56.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="784.27" y="543.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="397.6" y="341" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="400.64" y="351.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (290 samples, 24.68%)</title><rect x="602.5" y="645" width="291.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="605.51" y="655.5" >Lua metamethod __eq: derive-eq_enum:46</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="347.4" y="165" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="350.43" y="175.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (18 samples, 1.53%)</title><rect x="204.8" y="341" width="18.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="207.83" y="351.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="322.3" y="245" width="9.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="325.32" y="255.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (56 samples, 4.77%)</title><rect x="996.2" y="533" width="56.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="999.18" y="543.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (21 samples, 1.79%)</title><rect x="525.2" y="421" width="21.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="528.18" y="431.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (19 samples, 1.62%)</title><rect x="935.9" y="373" width="19.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="938.92" y="383.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="909.8" y="453" width="10.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="912.81" y="463.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="935.9" y="325" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="938.92" y="335.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (72 samples, 6.13%)</title><rect x="610.5" y="405" width="72.4" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="613.54" y="415.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="823.4" y="421" width="9.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="826.45" y="431.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:39 (1,175 samples, 100.00%)</title><rect x="10.0" y="853" width="1180.0" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="13.00" y="863.5" >Lua  nil: derive-eq_enum:39</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (18 samples, 1.53%)</title><rect x="51.2" y="117" width="18.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="54.17" y="127.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="756.2" y="533" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="759.16" y="543.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (880 samples, 74.89%)</title><rect x="10.0" y="693" width="883.7" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="13.00" y="703.5" >Lua metamethod __eq: derive-eq_enum:46</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (19 samples, 1.62%)</title><rect x="935.9" y="405" width="19.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="938.92" y="415.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="292.2" y="309" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="295.20" y="319.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (17 samples, 1.45%)</title><rect x="508.1" y="357" width="17.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="511.11" y="367.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="1134.8" y="677" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1137.77" y="687.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (9 samples, 0.77%)</title><rect x="163.7" y="389" width="9.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="166.65" y="399.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="743.1" y="325" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="746.11" y="335.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (74 samples, 6.30%)</title><rect x="314.3" y="341" width="74.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="317.29" y="351.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (18 samples, 1.53%)</title><rect x="51.2" y="101" width="18.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="54.17" y="111.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1413" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1423.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="1094.6" y="597" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1097.60" y="607.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1701" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1711.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (10 samples, 0.85%)</title><rect x="292.2" y="325" width="10.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="295.20" y="335.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="406.7" y="309" width="10.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="409.68" y="319.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (83 samples, 7.06%)</title><rect x="163.7" y="421" width="83.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="166.65" y="431.5" >Lua metam..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1573" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1583.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (150 samples, 12.77%)</title><rect x="901.8" y="661" width="150.6" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="904.78" y="671.5" >Lua metamethod __eq..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="643.7" y="245" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="646.69" y="255.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (18 samples, 1.53%)</title><rect x="853.6" y="533" width="18.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="856.57" y="543.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="51.2" y="53" width="8.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="54.17" y="63.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms-generators.lua:374 (150 samples, 12.77%)</title><rect x="901.8" y="629" width="150.6" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="904.78" y="639.5" >Lua metamethod __eq..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1477" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1487.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="589.5" y="453" width="9.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="592.46" y="463.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:14 (150 samples, 12.77%)</title><rect x="901.8" y="645" width="150.6" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="904.78" y="655.5" >Lua  nil: derive-eq..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (232 samples, 19.74%)</title><rect x="901.8" y="741" width="233.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="904.78" y="751.5" >Lua  nil: derive-eq_enum:8</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (56 samples, 4.77%)</title><rect x="837.5" y="613" width="56.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="840.51" y="623.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="99.4" y="229" width="9.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="102.38" y="239.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="1077.5" y="613" width="10.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="1080.52" y="623.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1152 (1,175 samples, 100.00%)</title><rect x="10.0" y="1045" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1055.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1152</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="230.9" y="277" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="233.94" y="287.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (151 samples, 12.85%)</title><rect x="314.3" y="501" width="151.6" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="317.29" y="511.5" >Lua metamethod __eq..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1381" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1391.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1141" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1151.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (19 samples, 1.62%)</title><rect x="265.1" y="357" width="19.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="268.08" y="367.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:17 (74 samples, 6.30%)</title><rect x="314.3" y="405" width="74.3" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="317.29" y="415.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:38 (8 samples, 0.68%)</title><rect x="257.0" y="421" width="8.1" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="260.05" y="431.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (18 samples, 1.53%)</title><rect x="797.3" y="469" width="18.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="800.34" y="479.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (82 samples, 6.98%)</title><rect x="1052.4" y="693" width="82.4" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1055.42" y="703.5" >Lua metam..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (19 samples, 1.62%)</title><rect x="935.9" y="357" width="19.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="938.92" y="367.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1173" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1183.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (19 samples, 1.62%)</title><rect x="423.8" y="245" width="19.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="426.75" y="255.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (10 samples, 0.85%)</title><rect x="482.0" y="421" width="10.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="485.00" y="431.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="853.6" y="485" width="8.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="856.57" y="495.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="643.7" y="229" width="10.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="646.69" y="239.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (8 samples, 0.68%)</title><rect x="533.2" y="341" width="8.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="536.22" y="351.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="1068.5" y="661" width="9.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1071.49" y="671.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="482.0" y="405" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="485.00" y="415.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1797" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1807.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="1012.2" y="485" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1015.25" y="495.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (18 samples, 1.53%)</title><rect x="853.6" y="581" width="18.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="856.57" y="591.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="949" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="959.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="508.1" y="325" width="8.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="511.11" y="335.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1829" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1839.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (23 samples, 1.96%)</title><rect x="365.5" y="229" width="23.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="368.51" y="239.5" >L..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1589" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1599.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (22 samples, 1.87%)</title><rect x="871.7" y="549" width="22.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="874.65" y="559.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (24 samples, 2.04%)</title><rect x="222.9" y="325" width="24.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="225.90" y="335.5" >L..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="797.3" y="405" width="10.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="800.34" y="415.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1317" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1327.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (57 samples, 4.85%)</title><rect x="1077.5" y="661" width="57.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1080.52" y="671.5" >Lua  n..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="423.8" y="229" width="10.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="426.75" y="239.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="124.5" y="133" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="127.49" y="143.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1253" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1263.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms-generators.lua:374 (880 samples, 74.89%)</title><rect x="10.0" y="709" width="883.7" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="13.00" y="719.5" >Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms-generators.lua:374</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="124.5" y="213" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="127.49" y="223.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (76 samples, 6.47%)</title><rect x="901.8" y="485" width="76.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="904.78" y="495.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (8 samples, 0.68%)</title><rect x="51.2" y="69" width="8.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="54.17" y="79.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (10 samples, 0.85%)</title><rect x="1037.4" y="405" width="10.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1040.35" y="415.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (9 samples, 0.77%)</title><rect x="919.9" y="421" width="9.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="922.86" y="431.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="373.5" y="133" width="9.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="376.54" y="143.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="1068.5" y="597" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1071.49" y="607.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (1,175 samples, 100.00%)</title><rect x="10.0" y="869" width="1180.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="13.00" y="879.5" >Lua metamethod __eq: derive-eq_enum:46</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1861" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1871.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: bundle:/main.lua:128 (1,175 samples, 100.00%)</title><rect x="10.0" y="1925" width="1180.0" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="13.00" y="1935.5" >Lua  nil: bundle:/main.lua:128</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (10 samples, 0.85%)</title><rect x="482.0" y="469" width="10.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="485.00" y="479.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:17 (145 samples, 12.34%)</title><rect x="18.0" y="405" width="145.7" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="21.03" y="415.5" >Lua  nil: derive-e..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (57 samples, 4.85%)</title><rect x="1077.5" y="629" width="57.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1080.52" y="639.5" >Lua me..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="292.2" y="357" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="295.20" y="367.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="772.2" y="533" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="775.23" y="543.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (10 samples, 0.85%)</title><rect x="482.0" y="437" width="10.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="485.00" y="447.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="1120.7" y="565" width="9.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1123.71" y="575.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1653" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1663.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="150.6" y="165" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="153.60" y="175.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="627.6" y="293" width="10.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="630.62" y="303.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (55 samples, 4.68%)</title><rect x="108.4" y="261" width="55.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="111.42" y="271.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:14 (145 samples, 12.34%)</title><rect x="610.5" y="533" width="145.7" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="613.54" y="543.5" >Lua  nil: derive-e..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (9 samples, 0.77%)</title><rect x="562.3" y="421" width="9.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="565.34" y="431.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (18 samples, 1.53%)</title><rect x="1094.6" y="581" width="18.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1097.60" y="591.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (150 samples, 12.77%)</title><rect x="901.8" y="693" width="150.6" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="904.78" y="703.5" >Lua metamethod __eq..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="853.6" y="565" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="856.57" y="575.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="150.6" y="133" width="9.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="153.60" y="143.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="451.9" y="197" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="454.87" y="207.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (18 samples, 1.53%)</title><rect x="204.8" y="293" width="18.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="207.83" y="303.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (8 samples, 0.68%)</title><rect x="837.5" y="581" width="8.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="840.51" y="591.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (56 samples, 4.77%)</title><rect x="546.3" y="517" width="56.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="549.27" y="527.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="26.1" y="197" width="9.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="29.07" y="207.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="204.8" y="245" width="10.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="207.83" y="255.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (19 samples, 1.62%)</title><rect x="423.8" y="261" width="19.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="426.75" y="271.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="1037.4" y="389" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1040.35" y="399.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (56 samples, 4.77%)</title><rect x="546.3" y="533" width="56.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="549.27" y="543.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="823.4" y="405" width="9.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="826.45" y="415.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="797.3" y="437" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="800.34" y="447.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (19 samples, 1.62%)</title><rect x="716.0" y="357" width="19.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="718.99" y="367.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (9 samples, 0.77%)</title><rect x="546.3" y="501" width="9.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="549.27" y="511.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (295 samples, 25.11%)</title><rect x="10.0" y="485" width="296.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="13.00" y="495.5" >Lua metamethod __eq: derive-eq_enum:46</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (59 samples, 5.02%)</title><rect x="406.7" y="357" width="59.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="409.68" y="367.5" >Lua  n..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="618.6" y="357" width="9.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="621.58" y="367.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (22 samples, 1.87%)</title><rect x="815.4" y="501" width="22.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="818.41" y="511.5" >L..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (9 samples, 0.77%)</title><rect x="669.8" y="229" width="9.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="672.80" y="239.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (56 samples, 4.77%)</title><rect x="837.5" y="597" width="56.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="840.51" y="607.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:17 (76 samples, 6.47%)</title><rect x="901.8" y="597" width="76.3" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="904.78" y="607.5" >Lua  nil..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="492.0" y="405" width="9.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="495.04" y="415.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (295 samples, 25.11%)</title><rect x="10.0" y="533" width="296.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="13.00" y="543.5" >Lua metamethod __eq: derive-eq_enum:46</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (72 samples, 6.13%)</title><rect x="91.3" y="293" width="72.4" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="94.34" y="303.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (76 samples, 6.47%)</title><rect x="901.8" y="501" width="76.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="904.78" y="511.5" >Lua meta..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="108.4" y="229" width="10.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="111.42" y="239.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (58 samples, 4.94%)</title><rect x="919.9" y="469" width="58.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="922.86" y="479.5" >Lua  n..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1077" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1087.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (22 samples, 1.87%)</title><rect x="1167.9" y="693" width="22.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1170.91" y="703.5" >L..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:14 (295 samples, 25.11%)</title><rect x="10.0" y="565" width="296.3" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="13.00" y="575.5" >Lua  nil: derive-eq_enum:14</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (21 samples, 1.79%)</title><rect x="735.1" y="389" width="21.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="738.07" y="399.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms-generators.lua:374 (295 samples, 25.11%)</title><rect x="10.0" y="549" width="296.3" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="13.00" y="559.5" >Lua metamethod __eq: @/home/erry/git/gi..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1237" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1247.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (226 samples, 19.23%)</title><rect x="610.5" y="629" width="227.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="613.54" y="639.5" >Lua  nil: derive-eq_enum:8</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (59 samples, 5.02%)</title><rect x="247.0" y="437" width="59.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="250.00" y="447.5" >Lua me..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (880 samples, 74.89%)</title><rect x="10.0" y="773" width="883.7" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="13.00" y="783.5" >Lua metamethod __eq: derive-eq_enum:46</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1733" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1743.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (22 samples, 1.87%)</title><rect x="1167.9" y="661" width="22.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1170.91" y="671.5" >L..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (9 samples, 0.77%)</title><rect x="1134.8" y="693" width="9.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="1137.77" y="703.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (9 samples, 0.77%)</title><rect x="150.6" y="117" width="9.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="153.60" y="127.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (10 samples, 0.85%)</title><rect x="996.2" y="501" width="10.0" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="999.18" y="511.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="150.6" y="181" width="9.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="153.60" y="191.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (57 samples, 4.85%)</title><rect x="331.4" y="261" width="57.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="334.36" y="271.5" >Lua me..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (19 samples, 1.62%)</title><rect x="423.8" y="309" width="19.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="426.75" y="319.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="823.4" y="453" width="9.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="826.45" y="463.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:33 (8 samples, 0.68%)</title><rect x="465.9" y="469" width="8.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="468.93" y="479.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (145 samples, 12.34%)</title><rect x="610.5" y="501" width="145.7" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="613.54" y="511.5" >Lua metamethod __e..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (83 samples, 7.06%)</title><rect x="163.7" y="437" width="83.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="166.65" y="447.5" >Lua  nil:..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:38 (8 samples, 0.68%)</title><rect x="474.0" y="469" width="8.0" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="476.97" y="479.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="1077.5" y="597" width="10.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1080.52" y="607.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1157" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1167.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1749" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1759.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (56 samples, 4.77%)</title><rect x="35.1" y="165" width="56.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="38.11" y="175.5" >Lua m..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="743.1" y="293" width="9.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="746.11" y="303.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1765" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1775.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (10 samples, 0.85%)</title><rect x="909.8" y="469" width="10.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="912.81" y="479.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (58 samples, 4.94%)</title><rect x="188.8" y="373" width="58.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="191.76" y="383.5" >Lua me..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (10 samples, 0.85%)</title><rect x="986.1" y="501" width="10.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="989.14" y="511.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:9 (22 samples, 1.87%)</title><rect x="1112.7" y="613" width="22.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1115.67" y="623.5" >L..</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (9 samples, 0.77%)</title><rect x="669.8" y="261" width="9.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="672.80" y="271.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:15 (145 samples, 12.34%)</title><rect x="610.5" y="597" width="145.7" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="613.54" y="607.5" >Lua  nil: derive-e..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (8 samples, 0.68%)</title><rect x="35.1" y="133" width="8.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="38.11" y="143.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (18 samples, 1.53%)</title><rect x="204.8" y="325" width="18.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="207.83" y="335.5" ></text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:14 (145 samples, 12.34%)</title><rect x="18.0" y="373" width="145.7" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="21.03" y="383.5" >Lua  nil: derive-e..</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1813" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1823.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1333" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1343.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="188.8" y="325" width="10.0" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="191.76" y="335.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (9 samples, 0.77%)</title><rect x="669.8" y="213" width="9.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="672.80" y="223.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (880 samples, 74.89%)</title><rect x="10.0" y="741" width="883.7" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="13.00" y="751.5" >Lua metamethod __eq: derive-eq_enum:46</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms-generators.lua:374 (145 samples, 12.34%)</title><rect x="610.5" y="517" width="145.7" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="613.54" y="527.5" >Lua metamethod __e..</text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (590 samples, 50.21%)</title><rect x="10.0" y="613" width="592.5" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="13.00" y="623.5" >Lua metamethod __eq: derive-eq_enum:46</text>
+</g>
+<g >
+<title>Lua  nil: derive-eq_enum:8 (19 samples, 1.62%)</title><rect x="716.0" y="389" width="19.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="718.99" y="399.5" ></text>
+</g>
+<g >
+<title>Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413 (1,175 samples, 100.00%)</title><rect x="10.0" y="1029" width="1180.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="1039.5" >Lua upvalue infer: @/home/erry/git/github.com/Fundament-Software/Alicorn0/evaluator.lua:1413</text>
+</g>
+<g >
+<title>Lua metamethod __eq: @/home/erry/git/github.com/Fundament-Software/Alicorn0/terms.lua:229 (18 samples, 1.53%)</title><rect x="1012.2" y="453" width="18.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1015.25" y="463.5" ></text>
+</g>
+<g >
+<title>Lua metamethod __eq: derive-eq_enum:46 (10 samples, 0.85%)</title><rect x="986.1" y="533" width="10.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="989.14" y="543.5" ></text>
+</g>
+</g>
+</svg>
