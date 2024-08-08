@@ -6,15 +6,13 @@ let prim-sub = (intrinsic "return function(a, b) return a - b end" : prim-arith-
 #let foo = (record (bar = 5) (baz = 6))
 #let subbed = prim-sub foo.bar y
 
-let implicit-wrap =
-	lambda_implicit (T : type_(10))
-		lambda ((x : T))
-			wrap T x
+let implicit-wrap = lambda_implicit (T : type_(10))
+	lambda ((x : T))
+		wrap T x
 
-let implicit-unwrap =
-	lambda_implicit (T : type_(10))
-		lambda ((x : wrapped(T)))
-			unwrap T x
+let implicit-unwrap = lambda_implicit (T : type_(10))
+	lambda ((x : wrapped(T)))
+		unwrap T x
 
 # FIXME: type of universe
 # we need to wrap this, and wrap takes a type in star-10
@@ -478,8 +476,9 @@ let prim-tuple-type = lambda (U : universe, decls : tuple-def-type(U))
 	let (T) = inner(implicit-wrap(decls))
 	implicit-unwrap(T)
 # FIXME: these implicit functions don't seem to work at all
+# something about metavariables inside neutral values maybe
 let tuple-type-implicit = lambda_implicit (U : universe)
-	lambda (decls : tuple-def-type(U))
+	lambda ((decls : tuple-def-type(U)))
 		let inner = intrinsic "return terms.value.tuple_type" :
 			prim-func-type ((decls : wrapped(tuple-def-type(U)))) -> ((T : wrapped(prim-type)))
 		let (T) = inner(implicit-wrap(decls))
@@ -487,7 +486,7 @@ let tuple-type-implicit = lambda_implicit (U : universe)
 		#implicit-unwrap(T)
 		unwrap(prim-type, T)
 let prim-tuple-type-implicit = lambda_implicit (U : universe)
-	lambda (decls : tuple-def-type(U))
+	lambda ((decls : tuple-def-type(U)))
 		let inner = intrinsic "return terms.value.prim_tuple_type" :
 			prim-func-type ((decls : wrapped(tuple-def-type(U)))) -> ((T : wrapped(prim-type)))
 		let (T) = inner(implicit-wrap(decls))
@@ -685,35 +684,39 @@ let prim-matcher = new-prim-type-family new-prim-unique-id("matcher")
 
 let nil-handler-type = lambda (userdata : prim-type, result : tuple-def-type(prim-type))
 	prim-func-type ((ud : userdata)) -> (r : prim-tuple-type(prim-type, result))
-let prim-matcher-is-nil = lambda (userdata : prim-type, result : tuple-def-type(prim-type), accept-handler : nil-handler-type(userdata, result))
-	let inner = intrinsic "return metalanguage.isnil" :
-		prim-func-type ((accept-handler : nil-handler-type(userdata, result))) -> ((m : prim-matcher(userdata, result)))
-	let (m) = inner(accept-handler)
-	m
+let prim-matcher-is-nil = lambda_implicit (userdata : prim-type, result : tuple-def-type(prim-type))
+	lambda ((accept-handler : nil-handler-type(userdata, result)))
+		let inner = intrinsic "return metalanguage.isnil" :
+			prim-func-type ((accept-handler : nil-handler-type(userdata, result))) -> ((m : prim-matcher(userdata, result)))
+		let (m) = inner(accept-handler)
+		m
 
 let pair-handler-type = lambda (userdata : prim-type, result : tuple-def-type(prim-type))
 	prim-func-type (ud : userdata, a : prim-syntax, b : prim-syntax) -> (r : prim-tuple-type(prim-type, result))
-let prim-matcher-is-pair = lambda (userdata : prim-type, result : tuple-def-type(prim-type), accept-handler : pair-handler-type(userdata, result))
-	let inner = intrinsic "return metalanguage.ispair" :
-		prim-func-type ((accept-handler : pair-handler-type(userdata, result))) -> ((m : prim-matcher(userdata, result)))
-	let (m) = inner(accept-handler)
-	m
+let prim-matcher-is-pair = lambda_implicit (userdata : prim-type, result : tuple-def-type(prim-type))
+	lambda ((accept-handler : pair-handler-type(userdata, result)))
+		let inner = intrinsic "return metalanguage.ispair" :
+			prim-func-type ((accept-handler : pair-handler-type(userdata, result))) -> ((m : prim-matcher(userdata, result)))
+		let (m) = inner(accept-handler)
+		m
 
 let symbol-handler-type = lambda (userdata : prim-type, result : tuple-def-type(prim-type))
 	prim-func-type (ud : userdata, symbol : prim-string) -> (r : prim-tuple-type(prim-type, result))
-let prim-matcher-is-symbol = lambda (userdata : prim-type, result : tuple-def-type(prim-type), accept-handler : symbol-handler-type(userdata, result))
-	let inner = intrinsic "return metalanguage.issymbol" :
-		prim-func-type ((accept-handler : symbol-handler-type(userdata, result))) -> ((m : prim-matcher(userdata, result)))
-	let (m) = inner(accept-handler)
-	m
+let prim-matcher-is-symbol = lambda_implicit (userdata : prim-type, result : tuple-def-type(prim-type))
+	lambda ((accept-handler : symbol-handler-type(userdata, result)))
+		let inner = intrinsic "return metalanguage.issymbol" :
+			prim-func-type ((accept-handler : symbol-handler-type(userdata, result))) -> ((m : prim-matcher(userdata, result)))
+		let (m) = inner(accept-handler)
+		m
 
 let value-handler-type = lambda (userdata : prim-type, result : tuple-def-type(prim-type))
 	prim-func-type (ud : userdata, val : prim-literal) -> (r : prim-tuple-type(prim-type, result))
-let prim-matcher-is-value = lambda (userdata : prim-type, result : tuple-def-type(prim-type), accept-handler : value-handler-type(userdata, result))
-	let inner = intrinsic "return metalanguage.isvalue" :
-		prim-func-type ((accept-handler : value-handler-type(userdata, result))) -> ((m : prim-matcher(userdata, result)))
-	let (m) = inner(accept-handler)
-	m
+let prim-matcher-is-value = lambda_implicit (userdata : prim-type, result : tuple-def-type(prim-type))
+	lambda ((accept-handler : value-handler-type(userdata, result)))
+		let inner = intrinsic "return metalanguage.isvalue" :
+			prim-func-type ((accept-handler : value-handler-type(userdata, result))) -> ((m : prim-matcher(userdata, result)))
+		let (m) = inner(accept-handler)
+		m
 
 let reducible-handler-type = lambda (userdata : prim-type, result2 : tuple-def-type(prim-type), result : tuple-def-type(prim-type))
 	# prepend userdata to result2
@@ -745,26 +748,47 @@ let prim-matcher-reducible = lambda (
 	# look ma, no intrinsics!
 	let (m) = apply(red, red-param)
 	m
+# FIXME: more neutral woes
+#let prim-matcher-reducible = lambda_implicit (userdata : prim-type)
+#	lambda (
+#			storage  : tuple-def-type(prim-type),
+#			result2  : tuple-def-type(prim-type),
+#			result   : tuple-def-type(prim-type),
+#			red            : reducer-type(userdata, storage, result2, result),
+#			s              : prim-tuple-type(prim-type, storage),
+#			accept-handler : reducible-handler-type(userdata, result2, result))
+#		let accept-handler-type = reducible-handler-type(userdata, result2, result)
+#		let accept-handler-defn = tuple-def-singleton(prim-type, accept-handler-type)
+#		let red-param-defn = tuple-def-concat(prim-type, accept-handler-defn, storage)
+#		let red-result-defn = tuple-def-singleton(prim-type, prim-matcher(userdata, result))
+#
+#		let accept-handler-tuple = prim-tuple-of(prim-type, accept-handler-defn)(accept-handler)
+#		let red-param = prim-tuple-concat(prim-type, accept-handler-defn, storage, accept-handler-tuple, s)
+#
+#		# look ma, no intrinsics!
+#		let (m) = apply(red, red-param)
+#		m
 
 let failure-handler-type = lambda (userdata : prim-type, result : tuple-def-type(prim-type))
 	prim-func-type (ud : userdata, exception : prim-lua-error) -> (r : prim-tuple-type(prim-type, result))
 
-let match-syntax = lambda (
-		userdata        : prim-type,
-		result          : tuple-def-type(prim-type),
-		matchers        : prim-array-type(prim-matcher(userdata, result)),
-		failure-handler : failure-handler-type(userdata, result),
-		syn             : prim-syntax,
-		ud              : userdata)
-	let inner = intrinsic
-		""""
-			local function match_syntax(matchers, failure_handler, syn, ud)
-				return syn:match(matchers, failure_handler, ud)
-			end
-			return match_syntax
-		:
-		prim-func-type (matchers        : prim-array-type(prim-matcher(userdata, result)), failure-handler : failure-handler-type(userdata, result), syn             : prim-syntax, ud              : wrapped(userdata)) -> (r : prim-tuple-type(prim-type, result))
-	inner(matchers, failure-handler, syn, implicit-wrap(ud))
+# FIXME: this is not ideal yet
+let match-syntax = lambda_implicit (userdata : prim-type)
+	lambda (
+			result          : tuple-def-type(prim-type),
+			matchers        : prim-array-type(prim-matcher(userdata, result)),
+			failure-handler : failure-handler-type(userdata, result),
+			syn             : prim-syntax,
+			ud              : userdata)
+		let inner = intrinsic
+			""""
+				local function match_syntax(matchers, failure_handler, syn, ud)
+					return syn:match(matchers, failure_handler, ud)
+				end
+				return match_syntax
+			:
+			prim-func-type (matchers        : prim-array-type(prim-matcher(userdata, result)), failure-handler : failure-handler-type(userdata, result), syn             : prim-syntax, ud              : wrapped(userdata)) -> (r : prim-tuple-type(prim-type, result))
+		inner(matchers, failure-handler, syn, implicit-wrap(ud))
 
 let prim-term-of-inner = intrinsic
 	""""
@@ -807,6 +831,8 @@ let operative-result-defn = lambda ((goal : prim-goal))
 		tuple-def-singleton(prim-type, prim-term-of(goal))
 		tuple-def-singleton(prim-type, prim-environment)
 
+# FIXME: implicit userdata here causes neutral type in pairhandler
+# requires full speculation to resolve!
 let new-operative = lambda (userdata : prim-type, ud : userdata, handler : operative-handler-type(userdata))
 	let inner = intrinsic
 		""""
@@ -872,6 +898,7 @@ let block-match-failure-handler = lambda ((goal : prim-goal))
 		failure-handler-type(prim-unit, block-match-result-defn(goal))
 
 # alicorn doesn't have conds or branches yet so...
+# FIXME: implicit doesn't work here either
 let error-filter =
 	lambda (Tt : prim-type, Tf : prim-type, ok : prim-bool, val-or-err : prim-if(ok, Tt, Tf))
 		let inner = intrinsic
@@ -917,7 +944,6 @@ let do-impl = lambda (syn : prim-syntax, env : prim-environment, ud : prim-unit,
 
 	let (ok, term, inner_env) =
 		match-syntax
-			prim-unit
 			block-match-result-defn(goal-infer)
 			matchers
 			block-match-failure-handler(goal-infer)
@@ -1021,7 +1047,6 @@ let tuple-def-impl = lambda (syn : prim-syntax, env : prim-environment, ud : pri
 
 	let (ok, thread) =
 		match-syntax
-			prim-unit
 			tupleof-ascribed-names-match-result-defn
 			matchers
 			tupleof-ascribed-names-match-failure-handler
