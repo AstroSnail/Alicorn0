@@ -729,45 +729,26 @@ let reducer-type = lambda (userdata : prim-type, storage : tuple-def-type(prim-t
 	let accept-handler-defn = tuple-def-singleton(prim-type, accept-handler-type)
 	let params = tuple-def-concat(prim-type, accept-handler-defn, storage)
 	prim-func-type (p : prim-tuple-type(prim-type, params)) -> ((m : prim-matcher(userdata, result)))
-let prim-matcher-reducible = lambda (
-		userdata       : prim-type,
-		storage        : tuple-def-type(prim-type),
-		result2        : tuple-def-type(prim-type),
-		result         : tuple-def-type(prim-type),
-		red            : reducer-type(userdata, storage, result2, result),
-		s              : prim-tuple-type(prim-type, storage),
-		accept-handler : reducible-handler-type(userdata, result2, result))
-	let accept-handler-type = reducible-handler-type(userdata, result2, result)
-	let accept-handler-defn = tuple-def-singleton(prim-type, accept-handler-type)
-	let red-param-defn = tuple-def-concat(prim-type, accept-handler-defn, storage)
-	let red-result-defn = tuple-def-singleton(prim-type, prim-matcher(userdata, result))
-
-	let accept-handler-tuple = prim-tuple-of(prim-type, accept-handler-defn)(accept-handler)
-	let red-param = prim-tuple-concat(prim-type, accept-handler-defn, storage, accept-handler-tuple, s)
-
-	# look ma, no intrinsics!
-	let (m) = apply(red, red-param)
-	m
 # FIXME: more neutral woes
-#let prim-matcher-reducible = lambda_implicit (userdata : prim-type)
-#	lambda (
-#			storage  : tuple-def-type(prim-type),
-#			result2  : tuple-def-type(prim-type),
-#			result   : tuple-def-type(prim-type),
-#			red            : reducer-type(userdata, storage, result2, result),
-#			s              : prim-tuple-type(prim-type, storage),
-#			accept-handler : reducible-handler-type(userdata, result2, result))
-#		let accept-handler-type = reducible-handler-type(userdata, result2, result)
-#		let accept-handler-defn = tuple-def-singleton(prim-type, accept-handler-type)
-#		let red-param-defn = tuple-def-concat(prim-type, accept-handler-defn, storage)
-#		let red-result-defn = tuple-def-singleton(prim-type, prim-matcher(userdata, result))
-#
-#		let accept-handler-tuple = prim-tuple-of(prim-type, accept-handler-defn)(accept-handler)
-#		let red-param = prim-tuple-concat(prim-type, accept-handler-defn, storage, accept-handler-tuple, s)
-#
-#		# look ma, no intrinsics!
-#		let (m) = apply(red, red-param)
-#		m
+let prim-matcher-reducible = lambda_implicit (userdata : prim-type)
+	lambda (
+			storage  : tuple-def-type(prim-type),
+			result2  : tuple-def-type(prim-type),
+			result   : tuple-def-type(prim-type),
+			red            : reducer-type(userdata, storage, result2, result),
+			s              : prim-tuple-type(prim-type, storage),
+			accept-handler : reducible-handler-type(userdata, result2, result))
+		let accept-handler-type = reducible-handler-type(userdata, result2, result)
+		let accept-handler-defn = tuple-def-singleton(prim-type, accept-handler-type)
+		let red-param-defn = tuple-def-concat(prim-type, accept-handler-defn, storage)
+		let red-result-defn = tuple-def-singleton(prim-type, prim-matcher(userdata, result))
+
+		let accept-handler-tuple = prim-tuple-of(prim-type, accept-handler-defn)(accept-handler)
+		let red-param = prim-tuple-concat(prim-type, accept-handler-defn, storage, accept-handler-tuple, s)
+
+		# look ma, no intrinsics!
+		let (m) = apply(red, red-param)
+		m
 
 let failure-handler-type = lambda (userdata : prim-type, result : tuple-def-type(prim-type))
 	prim-func-type (ud : userdata, exception : prim-lua-error) -> (r : prim-tuple-type(prim-type, result))
@@ -928,7 +909,6 @@ let do-impl = lambda (syn : prim-syntax, env : prim-environment, ud : prim-unit,
 	let matcher-t = prim-matcher(prim-unit, block-match-result-defn(goal-infer))
 	let matcher =
 		prim-matcher-reducible
-			prim-unit
 			block-reducer-storage-defn
 			block-reducer-result2-defn(goal-infer)
 			block-match-result-defn(goal-infer)
@@ -1031,7 +1011,6 @@ let tuple-def-impl = lambda (syn : prim-syntax, env : prim-environment, ud : pri
 	let matcher-t = prim-matcher(prim-unit, tupleof-ascribed-names-match-result-defn)
 	let matcher =
 		prim-matcher-reducible
-			prim-unit
 			tupleof-ascribed-names-reducer-storage-defn
 			tupleof-ascribed-names-reducer-result2-defn
 			tupleof-ascribed-names-match-result-defn
