@@ -8,3 +8,4 @@
 /.vscode/
 /target/
 Cargo.lock
+/run2csv_*.csv
