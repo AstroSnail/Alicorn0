@@ -3669,6 +3669,8 @@ function TypeCheckerState:check_value(v, tag, context)
 	end
 end
 
+local mv_tab = { 0 }
+
 ---@return Metavariable
 ---@param context TypecheckingContext
 ---@param trait boolean?
@@ -3680,6 +3682,11 @@ function TypeCheckerState:metavariable(context, trait)
 		terms.metavariable_mt
 	)
 	U.append(self.values, { mv:as_value(), TypeCheckerTag.METAVAR })
+
+	mv_tab[1] = mv_tab[1] + 1
+	mv_tab[2] = mv_tab[2] and mv_tab[2] < i and mv_tab[2] or i
+	mv_tab[3] = mv_tab[3] and mv_tab[3] > i and mv_tab[2] or i
+
 	return mv
 end
 
@@ -4141,6 +4148,8 @@ local evaluator = {
 	IndepTupleRelation = IndepTupleRelation,
 	TupleDescRelation = TupleDescRelation,
 	register_host_srel = register_host_srel,
+
+	mv_tab = mv_tab,
 }
 internals_interface.evaluator = evaluator
 

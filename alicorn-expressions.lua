@@ -1232,6 +1232,28 @@ local block = metalanguage.reducer(
 	"block"
 )
 
+local color_tab = {
+	"\27[0m",
+	"\27[32m",
+	"\27[33m",
+	"\27[31m",
+	"\27[35m",
+}
+
+local function top_level_block_pair_handler(args, a, b)
+	local goal, env = args:unwrap()
+	local ok, val
+	ok, val, env = a:match(
+		{ expression(metalanguage.accept_handler, ExpressionArgs.new(goal, env)) },
+		metalanguage.failure_handler,
+		nil
+	)
+	if not ok then
+		return false, val
+	end
+	return true, true, a, val, b, env
+end
+
 local top_level_block = metalanguage.reducer(
 	---@param syntax ConstructedSyntax
 	---@param args TopLevelBlockArgs
@@ -1274,15 +1296,31 @@ local top_level_block = metalanguage.reducer(
 				.. "\n"
 		)
 		local progress = 0
+		local mv_sum = 0
 		while ok and continue do
-			ok, continue, newval, syntax, env = syntax:match({
-				metalanguage.ispair(collect_tuple_pair_handler),
+			local aval
+			ok, continue, aval, newval, syntax, env = syntax:match({
+				metalanguage.ispair(top_level_block_pair_handler),
 				metalanguage.isnil(collect_tuple_nil_handler),
 			}, metalanguage.failure_handler, ExpressionArgs.new(goal, env))
 			if ok and continue then
 				lastval = newval
 			end
 			-- print("newval", tostring(newval))
+			mv_sum = mv_sum + evaluator.mv_tab[1]
+			local mv_sev = math.floor(math.min(math.max(math.log(evaluator.mv_tab[1], 10), -1), #color_tab - 2)) + 2
+			io.write(
+				color_tab[mv_sev],
+				("during process %d, alicorn created %d metavariables, from %s to %s"):format(
+					progress,
+					table.unpack(evaluator.mv_tab, 1, 3)
+				),
+				color_tab[1],
+				"\n"
+			)
+			evaluator.mv_tab[1] = 0
+			evaluator.mv_tab[2] = nil
+			evaluator.mv_tab[3] = nil
 			progress = progress + 1
 			local line_setup_sequence = ""
 			if U.file_is_terminal() then
@@ -1297,9 +1335,9 @@ local top_level_block = metalanguage.reducer(
 					.. " / "
 					.. tostring(length)
 					.. " @ "
-					.. tostring(newval and newval.start_anchor or (syntax and syntax.start_anchor) or "") --FIXME wrong anchors
+					.. tostring(aval and aval.start_anchor or (syntax and syntax.start_anchor) or "") --FIXME wrong anchors
 					.. " … "
-					.. tostring(newval and newval.end_anchor or (syntax and syntax.end_anchor) or "")
+					.. tostring(aval and aval.end_anchor or (syntax and syntax.end_anchor) or "")
 					.. "\n"
 			)
 		end
@@ -1308,6 +1346,7 @@ local top_level_block = metalanguage.reducer(
 			return false, continue
 		end
 		io.write("\nFinished!\n")
+		io.write(("%d metavariables out of %d values\n"):format(mv_sum, #evaluator.typechecker_state.values))
 		return true, lastval, env
 	end,
 	"block"
