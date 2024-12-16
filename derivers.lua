@@ -433,6 +433,7 @@ local diff = {
 					return diff_impl.diff(left[d], right[d])
 				else
 					print("stopping diff (missing diff impl)")
+					print("type:", dt)
 					return
 				end
 			else
@@ -487,6 +488,7 @@ local diff = {
 							return diff_impl.diff(left[d], right[d])
 						else
 							print("stopping diff (missing diff impl)")
+							print("type:", dt)
 							return
 						end
 					else
