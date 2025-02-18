@@ -1,3 +1,4 @@
+error("this file seems unused!")
 local U = require "alicorn-utils"
 local metalanguage = require "metalanguage"
 
